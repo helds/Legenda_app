@@ -1,0 +1,82 @@
+{
+  "name": "karaoke-caption-studio",
+  "version": "1.0.0",
+  "private": true,
+  "main": "electron/main.js",
+
+  "scripts": {
+
+    "server":"node server/index.js",
+
+    "client":"cd client && npm run dev",
+
+    "electron":"electron .",
+
+    "dev":"concurrently \"npm run client\" \"wait-on http://localhost:5173 && electron .\"",
+
+    "build-client":"cd client && npm run build",
+
+    "dist":"npm run build-client && electron-builder"
+
+  },
+
+  "dependencies": {
+
+    "express":"^4.19.2",
+    "multer":"^1.4.5-lts.1",
+    "cors":"^2.8.5",
+
+    "@remotion/bundler":"^4.0.0",
+    "@remotion/renderer":"^4.0.0"
+
+  },
+
+  "devDependencies": {
+
+    "concurrently":"^8.2.2",
+
+    "electron":"latest",
+
+    "electron-builder":"latest",
+
+    "wait-on":"latest",
+
+    "cross-env":"latest"
+
+  },
+
+  "build": {
+
+    "appId":"com.karaoke.caption",
+
+    "productName":"Karaoke Caption Studio",
+
+    "directories":{
+
+      "output":"release"
+
+    },
+
+    "files":[
+
+      "electron/**/*",
+
+      "server/**/*",
+
+      "shared/**/*",
+
+      "client/dist/**/*",
+
+      "package.json"
+
+    ],
+
+    "win":{
+
+      "target":"nsis"
+
+    }
+
+  }
+
+}
