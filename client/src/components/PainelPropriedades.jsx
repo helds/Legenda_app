@@ -1,78 +1,194 @@
 // client/src/components/PainelPropriedades.jsx
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 
-// Lista de fallback usada quando não é possível obter as fontes do
-// sistema operacional (ex: rodando no navegador em modo dev, sem o
-// Electron, ou se a API nativa falhar por qualquer motivo).
-const FONTES_FALLBACK = ['Inter', 'Playfair Display', 'Lora', 'DM Sans', 'Roboto'];
+// Fallback usado apenas se a leitura das fontes do sistema falhar (por
+// exemplo, rodando fora do Electron, direto no navegador em dev). Nesse
+// caso a única fonte "garantida" existir é a que o navegador sempre
+// resolve para uma sans-serif genérica — não fingimos ter Bold/Italic
+// porque não temos como confirmar.
+const FONTE_FALLBACK = {
+  familia: 'sans-serif',
+  estilos: [{ peso: 400, italico: false, nomeEstilo: 'Regular' }],
+};
 
-const OPCOES_ESTILO_FONTE = [
-  { valor: 'normal', label: 'Normal' },
-  { valor: 'negrito', label: 'Negrito' },
-  { valor: 'italico', label: 'Itálico' },
-  { valor: 'negrito-italico', label: 'Negrito + Itálico' },
-];
+// Escolhe, dentro dos estilos disponíveis de uma família, o mais
+// próximo do peso/itálico atualmente configurado. Evita que trocar de
+// fonte deixe o painel com um peso que aquela família não possui (ex:
+// vinha de "Roboto" peso 900 e foi para uma fonte que só tem 400/700).
+function encontrarEstiloMaisProximo(estilosDisponiveis, pesoAlvo, italicoAlvo) {
+  if (estilosDisponiveis.length === 0) return { peso: 400, italico: false };
 
-const OPCOES_MODO_REVELACAO = [
-  { valor: 'palavra', label: 'Palavra inteira' },
-  { valor: 'silaba', label: 'Sílaba por sílaba' },
-  { valor: 'letra', label: 'Letra por letra' },
-];
+  const mesmoItalico = estilosDisponiveis.filter((e) => e.italico === italicoAlvo);
+  const candidatos = mesmoItalico.length > 0 ? mesmoItalico : estilosDisponiveis;
 
-// Hook que busca a lista de fontes instaladas no sistema operacional via
-// IPC do Electron (window.api.listarFontes, exposto pelo preload.js).
-// Se a API não existir (rodando fora do Electron) ou a chamada falhar,
-// cai de volta para a lista fixa FONTES_FALLBACK.
-function useFontesDoSistema() {
-  const [fontes, setFontes] = useState(FONTES_FALLBACK);
-  const [carregando, setCarregando] = useState(true);
+  return candidatos.reduce((maisProximo, atual) => {
+    const distAtual = Math.abs(atual.peso - pesoAlvo);
+    const distMaisProximo = Math.abs(maisProximo.peso - pesoAlvo);
+    return distAtual < distMaisProximo ? atual : maisProximo;
+  });
+}
+
+// Registra no backend o arquivo de fonte real correspondente a um
+// estilo específico (família+peso+itálico), copiando-o para dentro do
+// projeto e retornando a URL pela qual a composição do Remotion vai
+// carregá-lo via @remotion/fonts. Retorna null silenciosamente em caso
+// de falha (ex: fonte "sans-serif" de fallback, que não tem arquivo real
+// — ver FONTE_FALLBACK) para não travar a edição de estilo por causa
+// disso; o pior caso é o texto cair no fallback genérico do navegador,
+// não um erro bloqueante.
+async function registrarFonteNoServidor({ arquivo, familia, peso, italico }) {
+  if (!arquivo) return null;
+  try {
+    const resp = await fetch('/api/fontes/registrar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ caminhoOrigem: arquivo, familia, peso, italico }),
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data.url;
+  } catch {
+    return null;
+  }
+}
+
+export function PainelPropriedades({ estilo, aoMudar, titulo, aoLimparOverride }) {
+  const [familiasDisponiveis, setFamiliasDisponiveis] = useState([]);
+  const [carregandoFontes, setCarregandoFontes] = useState(true);
+  const [erroFontes, setErroFontes] = useState(null);
+  const [registrandoFonte, setRegistrandoFonte] = useState(false);
 
   useEffect(() => {
     let cancelado = false;
 
-    async function carregar() {
-      if (!window.api?.listarFontes) {
-        setCarregando(false);
-        return;
-      }
+    async function carregarFontes() {
+      setCarregandoFontes(true);
+      setErroFontes(null);
       try {
-        const listaSistema = await window.api.listarFontes();
-        if (cancelado) return;
-        if (Array.isArray(listaSistema) && listaSistema.length > 0) {
-          // Garante que as fontes web-safe do fallback continuem
-          // disponíveis mesmo que não estejam instaladas localmente
-          // (importante para preview consistente entre máquinas).
-          const combinadas = Array.from(new Set([...FONTES_FALLBACK, ...listaSistema])).sort(
-            (a, b) => a.localeCompare(b, 'pt-BR')
-          );
-          setFontes(combinadas);
+        if (!window.api?.listarFontes) {
+          throw new Error('API de fontes indisponível (fora do Electron?)');
         }
-      } catch (err) {
-        console.error('Falha ao listar fontes do sistema:', err);
+        const fontes = await window.api.listarFontes();
+        if (!cancelado) {
+          setFamiliasDisponiveis(fontes.length > 0 ? fontes : [FONTE_FALLBACK]);
+        }
+      } catch (e) {
+        if (!cancelado) {
+          setErroFontes(e.message);
+          setFamiliasDisponiveis([FONTE_FALLBACK]);
+        }
       } finally {
-        if (!cancelado) setCarregando(false);
+        if (!cancelado) setCarregandoFontes(false);
       }
     }
 
-    carregar();
+    carregarFontes();
     return () => { cancelado = true; };
   }, []);
 
-  return { fontes, carregando };
-}
+  // Estilos (peso/itálico) disponíveis para a família atualmente
+  // selecionada no painel. Recalcula só quando a família ou a lista
+  // de fontes mudam — não a cada render.
+  const estilosDaFamiliaAtual = useMemo(() => {
+    const familia = familiasDisponiveis.find((f) => f.familia === estilo.fonte);
+    return familia ? familia.estilos : [];
+  }, [familiasDisponiveis, estilo.fonte]);
 
-export function PainelPropriedades({ estilo, aoMudar, titulo, aoLimparOverride }) {
-  const { fontes, carregando: carregandoFontes } = useFontesDoSistema();
+  const italicoAtual = !!estilo.italico;
 
   function atualizar(campo, valor) {
     aoMudar({ [campo]: valor });
   }
 
-  function atualizarFundo(campo, valor) {
-    aoMudar({ fundo: { ...estilo.fundo, [campo]: valor } });
+  // Aplica um estilo (peso+itálico) de uma família, registrando o
+  // arquivo real no servidor antes de gravar fonteUrl no projeto — sem
+  // essa URL, a composição do Remotion não consegue montar o @font-face
+  // e cai no fallback genérico tanto no preview quanto no vídeo final.
+  async function aplicarEstiloDeFonte(familia, estiloEscolhido) {
+    aoMudar({
+      fonte: familia,
+      pesoFonte: estiloEscolhido.peso,
+      italico: estiloEscolhido.italico,
+    });
+
+    setRegistrandoFonte(true);
+    const url = await registrarFonteNoServidor({
+      arquivo: estiloEscolhido.arquivo,
+      familia,
+      peso: estiloEscolhido.peso,
+      italico: estiloEscolhido.italico,
+    });
+    setRegistrandoFonte(false);
+
+    // Segunda chamada a aoMudar só com a URL — evita atraso perceptível
+    // no <select> por causa da requisição de rede (a UI já reflete a
+    // troca de fonte imediatamente; fonteUrl chega logo em seguida).
+    if (url) {
+      aoMudar({ fonteUrl: url });
+    }
   }
 
-  const fundo = estilo.fundo || {};
+  function aoTrocarFonte(novaFamilia) {
+    const familia = familiasDisponiveis.find((f) => f.familia === novaFamilia);
+    const estilosDaNovaFamilia = familia ? familia.estilos : [];
+
+    // Ajusta peso/itálico automaticamente para algo que a nova família
+    // realmente possui, em vez de deixar configurado um estilo
+    // inexistente (o que faria o navegador cair num fallback silencioso
+    // e o preview não bater com o que a interface mostra).
+    const estiloEscolhido = encontrarEstiloMaisProximo(
+      estilosDaNovaFamilia,
+      estilo.pesoFonte,
+      italicoAtual
+    );
+
+    aplicarEstiloDeFonte(novaFamilia, estiloEscolhido);
+  }
+
+  function aoTrocarPeso(novoPeso) {
+    const estiloEscolhido = estilosDaFamiliaAtual.find(
+      (e) => e.peso === novoPeso && e.italico === italicoAtual
+    );
+    if (!estiloEscolhido) {
+      // Não deveria acontecer (o <select> só lista pesos válidos), mas
+      // por segurança evita mandar um registro de fonte incompleto.
+      atualizar('pesoFonte', novoPeso);
+      return;
+    }
+    aplicarEstiloDeFonte(estilo.fonte, estiloEscolhido);
+  }
+
+  function aoAlternarItalico(novoItalico) {
+    // Se a família não tiver uma variante itálica para o peso atual,
+    // caímos para o peso mais próximo que tenha itálico disponível.
+    const estiloEscolhido = encontrarEstiloMaisProximo(
+      estilosDaFamiliaAtual,
+      estilo.pesoFonte,
+      novoItalico
+    );
+    aplicarEstiloDeFonte(estilo.fonte, estiloEscolhido);
+  }
+
+  const pesosDisponiveis = useMemo(() => {
+    const pesosParaItalicoAtual = estilosDaFamiliaAtual
+      .filter((e) => e.italico === italicoAtual)
+      .map((e) => e.peso);
+    // Se não houver nenhum peso para o itálico atual (família sem
+    // itálico), caímos para os pesos "normais" só para não deixar o
+    // seletor vazio — a troca de itálico em si já cuida de resetar o
+    // estado para algo consistente em aoAlternarItalico.
+    const base = pesosParaItalicoAtual.length > 0
+      ? pesosParaItalicoAtual
+      : estilosDaFamiliaAtual.filter((e) => !e.italico).map((e) => e.peso);
+    return [...new Set(base)].sort((a, b) => a - b);
+  }, [estilosDaFamiliaAtual, italicoAtual]);
+
+  const temVarianteItalica = estilosDaFamiliaAtual.some((e) => e.italico);
+
+  const NOMES_PESO = {
+    100: 'Thin', 200: 'Extra Light', 300: 'Light', 400: 'Regular',
+    500: 'Medium', 600: 'Semi Bold', 700: 'Bold', 800: 'Extra Bold', 900: 'Black',
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -81,56 +197,59 @@ export function PainelPropriedades({ estilo, aoMudar, titulo, aoLimparOverride }
       <div>
         <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
           Fonte {carregandoFontes && '(carregando fontes do sistema...)'}
+          {registrandoFonte && ' (sincronizando arquivo da fonte...)'}
         </label>
         <select
           value={estilo.fonte}
-          onChange={(e) => atualizar('fonte', e.target.value)}
+          onChange={(e) => aoTrocarFonte(e.target.value)}
+          disabled={carregandoFontes}
+          style={{ width: '100%', fontFamily: estilo.fonte }}
+        >
+          {familiasDisponiveis.map((f) => (
+            <option key={f.familia} value={f.familia} style={{ fontFamily: f.familia }}>
+              {f.familia}
+            </option>
+          ))}
+        </select>
+        {erroFontes && (
+          <p style={{ fontSize: 11, color: '#c0392b', margin: '4px 0 0' }}>
+            Não foi possível ler as fontes do sistema ({erroFontes}). Usando fonte padrão do navegador.
+          </p>
+        )}
+      </div>
+
+      <div>
+        <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
+          Espessura (peso da fonte)
+        </label>
+        <select
+          value={estilo.pesoFonte}
+          onChange={(e) => aoTrocarPeso(Number(e.target.value))}
+          disabled={pesosDisponiveis.length === 0}
           style={{ width: '100%' }}
         >
-          {fontes.map((f) => (
-            <option key={f} value={f}>{f}</option>
+          {pesosDisponiveis.length === 0 && (
+            <option value={estilo.pesoFonte}>Nenhum estilo detectado</option>
+          )}
+          {pesosDisponiveis.map((peso) => (
+            <option key={peso} value={peso}>
+              {NOMES_PESO[peso] || peso} ({peso})
+            </option>
           ))}
         </select>
       </div>
 
       <div>
-        <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-          Estilo da fonte
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: temVarianteItalica ? '#333' : '#bbb' }}>
+          <input
+            type="checkbox"
+            checked={italicoAtual}
+            disabled={!temVarianteItalica}
+            onChange={(e) => aoAlternarItalico(e.target.checked)}
+          />
+          Itálico {!temVarianteItalica && '(fonte não possui variante itálica instalada)'}
         </label>
-        <select
-          value={estilo.estiloFonte}
-          onChange={(e) => atualizar('estiloFonte', e.target.value)}
-          style={{ width: '100%' }}
-        >
-          {OPCOES_ESTILO_FONTE.map((op) => (
-            <option key={op.valor} value={op.valor}>{op.label}</option>
-          ))}
-        </select>
       </div>
-
-      <div>
-        <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-          Modo de revelação
-        </label>
-        <select
-          value={estilo.modoRevelacao ?? 'palavra'}
-          onChange={(e) => atualizar('modoRevelacao', e.target.value)}
-          style={{ width: '100%' }}
-        >
-          {OPCOES_MODO_REVELACAO.map((op) => (
-            <option key={op.valor} value={op.valor}>{op.label}</option>
-          ))}
-        </select>
-      </div>
-
-      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#444' }}>
-        <input
-          type="checkbox"
-          checked={!!estilo.estiloFonteSoNoDestaque}
-          onChange={(e) => atualizar('estiloFonteSoNoDestaque', e.target.checked)}
-        />
-        Aplicar estilo da fonte só durante o destaque (palavra "falada")
-      </label>
 
       <div>
         <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
@@ -155,46 +274,6 @@ export function PainelPropriedades({ estilo, aoMudar, titulo, aoLimparOverride }
           style={{ width: '100%' }}
         />
       </div>
-
-      {(estilo.modoRevelacao === 'palavra' || estilo.modoRevelacao === 'silaba') && (
-        <>
-          <div>
-            <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-              Escala do pulo: {Math.round(((estilo.escalaPulo ?? 1.15) - 1) * 100)}%
-            </label>
-            <input
-              type="range" min="1" max="1.6" step="0.01"
-              value={estilo.escalaPulo ?? 1.15}
-              onChange={(e) => atualizar('escalaPulo', Number(e.target.value))}
-              style={{ width: '100%' }}
-            />
-          </div>
-
-          <div>
-            <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-              Elevação do pulo: {Math.round((estilo.elevacaoPulo ?? 0.25) * 100)}% da altura da fonte
-            </label>
-            <input
-              type="range" min="0" max="1" step="0.01"
-              value={estilo.elevacaoPulo ?? 0.25}
-              onChange={(e) => atualizar('elevacaoPulo', Number(e.target.value))}
-              style={{ width: '100%' }}
-            />
-          </div>
-
-          <div>
-            <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-              Opacidade antes do destaque: {Math.round((estilo.opacidadeAntesDoDestaque ?? 0.9) * 100)}%
-            </label>
-            <input
-              type="range" min="0" max="1" step="0.05"
-              value={estilo.opacidadeAntesDoDestaque ?? 0.9}
-              onChange={(e) => atualizar('opacidadeAntesDoDestaque', Number(e.target.value))}
-              style={{ width: '100%' }}
-            />
-          </div>
-        </>
-      )}
 
       <div style={{ display: 'flex', gap: 10 }}>
         <div style={{ flex: 1 }}>
@@ -257,110 +336,6 @@ export function PainelPropriedades({ estilo, aoMudar, titulo, aoLimparOverride }
           style={{ width: '100%' }}
         />
       </div>
-
-      <hr style={{ border: 'none', borderTop: '1px solid #eee', margin: '4px 0' }} />
-
-      <div>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, fontWeight: 500 }}>
-          <input
-            type="checkbox"
-            checked={!!fundo.ativo}
-            onChange={(e) => atualizarFundo('ativo', e.target.checked)}
-          />
-          Fundo da legenda
-        </label>
-      </div>
-
-      {fundo.ativo && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingLeft: 4 }}>
-          <div style={{ display: 'flex', gap: 10 }}>
-            <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-                Cor do fundo
-              </label>
-              <input
-                type="color"
-                value={fundo.cor}
-                onChange={(e) => atualizarFundo('cor', e.target.value)}
-                style={{ width: '100%', height: 32 }}
-              />
-            </div>
-            <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-                Opacidade: {Math.round(fundo.opacidade * 100)}%
-              </label>
-              <input
-                type="range" min="0" max="1" step="0.05"
-                value={fundo.opacidade}
-                onChange={(e) => atualizarFundo('opacidade', Number(e.target.value))}
-                style={{ width: '100%' }}
-              />
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', gap: 10 }}>
-            <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-                Espaçamento X: {fundo.paddingX}px
-              </label>
-              <input
-                type="range" min="0" max="80" step="1"
-                value={fundo.paddingX}
-                onChange={(e) => atualizarFundo('paddingX', Number(e.target.value))}
-                style={{ width: '100%' }}
-              />
-            </div>
-            <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-                Espaçamento Y: {fundo.paddingY}px
-              </label>
-              <input
-                type="range" min="0" max="80" step="1"
-                value={fundo.paddingY}
-                onChange={(e) => atualizarFundo('paddingY', Number(e.target.value))}
-                style={{ width: '100%' }}
-              />
-            </div>
-          </div>
-
-          <div>
-            <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-              Raio da borda: {fundo.raioBorda}px
-            </label>
-            <input
-              type="range" min="0" max="60" step="1"
-              value={fundo.raioBorda}
-              onChange={(e) => atualizarFundo('raioBorda', Number(e.target.value))}
-              style={{ width: '100%' }}
-            />
-          </div>
-
-          <div style={{ display: 'flex', gap: 10 }}>
-            <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-                Deslocamento X: {fundo.offsetX}px
-              </label>
-              <input
-                type="range" min="-100" max="100" step="1"
-                value={fundo.offsetX}
-                onChange={(e) => atualizarFundo('offsetX', Number(e.target.value))}
-                style={{ width: '100%' }}
-              />
-            </div>
-            <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-                Deslocamento Y: {fundo.offsetY}px
-              </label>
-              <input
-                type="range" min="-100" max="100" step="1"
-                value={fundo.offsetY}
-                onChange={(e) => atualizarFundo('offsetY', Number(e.target.value))}
-                style={{ width: '100%' }}
-              />
-            </div>
-          </div>
-        </div>
-      )}
 
       {aoLimparOverride && (
         <button onClick={aoLimparOverride}>

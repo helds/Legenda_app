@@ -2,11 +2,20 @@ const { app, BrowserWindow, Menu } = require("electron");
 const path = require("path");
 const { fork } = require("child_process");
 const { dialog, ipcMain } = require("electron");
+const { escanearFontesDoSistema } = require("./fontScanner");
 
 const isDev = !app.isPackaged;
 
 let mainWindow;
 let backend;
+
+// Cache em memória do escaneamento de fontes: escanear o disco inteiro
+// de fontes é uma operação relativamente pesada (centenas de arquivos),
+// então guardamos o resultado da primeira chamada e reaproveitamos.
+// O usuário não costuma instalar/desinstalar fontes com o app aberto,
+// mas caso precise forçar atualização, o parâmetro forcarRecarga
+// (vindo do renderer) permite re-escanear sob demanda.
+let cacheDeFontes = null;
 
 function startBackend() {
     const serverPath = path.join(__dirname, "..", "server", "index.js");
@@ -150,33 +159,25 @@ ipcMain.handle("dialog:openSrt", async () => {
 
 });
 
-// Lista as fontes instaladas no sistema operacional do usuário (Windows,
-// macOS, Linux), usada pelo seletor de fonte na interface para oferecer
-// mais opções além das fontes web-safe embutidas. A lib font-list é
-// carregada de forma "lazy" (require dentro do handler) para não atrasar
-// a inicialização do app caso o módulo nativo demore para carregar, e
-// para isolar falhas: se a lib não estiver instalada/buildada para a
-// plataforma atual, devolvemos uma lista vazia e o frontend cai para o
-// fallback fixo em vez de quebrar o app inteiro.
-ipcMain.handle("sistema:listarFontes", async () => {
+// Retorna a lista de famílias de fontes instaladas no sistema, cada uma
+// com os estilos (peso + itálico) que realmente existem nos arquivos
+// encontrados no disco. Roda em processo separado do fork do backend
+// porque é uma operação de I/O síncrona (fs.readdirSync recursivo +
+// parsing binário) — mantê-la aqui no main evita travar o processo do
+// servidor Express, mas ainda assim pode segurar o event loop do main
+// brevemente na primeira chamada.
+ipcMain.handle("fonts:list", async (_event, forcarRecarga) => {
+
+    if (cacheDeFontes && !forcarRecarga) {
+        return cacheDeFontes;
+    }
 
     try {
-
-        const fontList = require("font-list");
-        const fontes = await fontList.getFonts({ disableQuoting: true });
-
-        // Remove duplicatas e ordena alfabeticamente.
-        const unicas = Array.from(new Set(fontes)).sort((a, b) =>
-            a.localeCompare(b, "pt-BR")
-        );
-
-        return unicas;
-
+        cacheDeFontes = escanearFontesDoSistema();
+        return cacheDeFontes;
     } catch (err) {
-
-        console.error("Falha ao listar fontes do sistema:", err);
+        console.error("Falha ao escanear fontes do sistema:", err);
         return [];
-
     }
 
 });

@@ -8,17 +8,17 @@ const path = require('path');
 const { parseSRT, aplicarOffset } = require('../shared/srtParser');
 const {
   criarProjeto,
-  criarEstiloPadrao,
   aplicarPresetAPalavras,
-  atualizarEstiloPadrao: atualizarEstiloPadraoModel,
+  resolverEstilo,
 } = require('../shared/projectModel');
 
 const PORT = process.env.PORT || 4000;
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
 const PROJECTS_DIR = path.join(__dirname, '..', 'projects');
 const EXPORTS_DIR = path.join(__dirname, '..', 'exports');
+const FONTS_DIR = path.join(__dirname, '..', 'fonts');
 
-[UPLOADS_DIR, PROJECTS_DIR, EXPORTS_DIR].forEach((dir) => {
+[UPLOADS_DIR, PROJECTS_DIR, EXPORTS_DIR, FONTS_DIR].forEach((dir) => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
@@ -29,40 +29,15 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use('/uploads', express.static(UPLOADS_DIR));
 app.use('/exports', express.static(EXPORTS_DIR));
+// Fontes copiadas do sistema do usuário ficam acessíveis aqui — tanto o
+// preview (@remotion/player no navegador do Electron) quanto o processo
+// de renderização (@remotion/renderer, que sobe um servidor local do
+// bundle e busca assets via serveUrl) enxergam esse endpoint.
+app.use('/fonts', express.static(FONTS_DIR));
 
 // Armazenamento simples em memória + disco. Para uso pessoal local isso
 // é suficiente — não precisa de banco de dados.
 const projetosEmMemoria = new Map();
-
-// Migra projetos salvos antes da introdução dos campos estiloFonte,
-// estiloFonteSoNoDestaque e fundo. Projetos antigos têm "pesoFonte"
-// (número) em vez de "estiloFonte" (string) e não têm "fundo" nenhum.
-// Isso evita que abrir um projeto salvo antes desta atualização quebre
-// a interface (que agora espera esses campos existirem).
-function migrarProjeto(projeto) {
-  if (!projeto || !projeto.estiloPadrao) return projeto;
-
-  const padraoNovo = criarEstiloPadrao();
-  const estiloPadrao = { ...projeto.estiloPadrao };
-
-  if (estiloPadrao.estiloFonte === undefined) {
-    // pesoFonte >= 600 vira 'negrito' como aproximação razoável;
-    // o usuário pode ajustar manualmente depois.
-    estiloPadrao.estiloFonte =
-      typeof estiloPadrao.pesoFonte === 'number' && estiloPadrao.pesoFonte >= 600
-        ? 'negrito'
-        : 'normal';
-    delete estiloPadrao.pesoFonte;
-  }
-  if (estiloPadrao.estiloFonteSoNoDestaque === undefined) {
-    estiloPadrao.estiloFonteSoNoDestaque = false;
-  }
-  if (!estiloPadrao.fundo) {
-    estiloPadrao.fundo = padraoNovo.fundo;
-  }
-
-  return { ...projeto, estiloPadrao };
-}
 
 function salvarProjetoEmDisco(id, projeto) {
   const filePath = path.join(PROJECTS_DIR, `${id}.json`);
@@ -72,8 +47,24 @@ function salvarProjetoEmDisco(id, projeto) {
 function carregarProjetoDoDisco(id) {
   const filePath = path.join(PROJECTS_DIR, `${id}.json`);
   if (!fs.existsSync(filePath)) return null;
-  const bruto = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-  return migrarProjeto(bruto);
+  return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+}
+
+// Extensões de fonte aceitas para cópia — mesma lista que o scanner do
+// processo Electron usa, para não aceitar arbitrariamente qualquer
+// arquivo que o renderer mande.
+const EXTENSOES_FONTE_VALIDAS = new Set(['.ttf', '.otf', '.ttc', '.otc']);
+
+// Gera um nome de arquivo estável e seguro (sem espaços/acentos/barras)
+// a partir de família + peso + itálico, para poder cachear cópias já
+// feitas e não duplicar a mesma fonte no disco a cada troca de estilo.
+function nomeArquivoFonte(familia, peso, italico, extensaoOriginal) {
+  const familiaSegura = familia
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // remove acentos
+    .replace(/[^a-zA-Z0-9]/g, '_');
+  const sufixoItalico = italico ? '_italic' : '';
+  return `${familiaSegura}_${peso}${sufixoItalico}${extensaoOriginal}`;
 }
 
 // --- Rotas ---
@@ -122,6 +113,65 @@ app.get('/api/video-local', (req, res) => {
       'Accept-Ranges': 'bytes',
     });
     fs.createReadStream(caminho).pipe(res);
+  }
+});
+
+// Copia um arquivo de fonte do disco local do usuário para dentro da
+// pasta /fonts do projeto e retorna a URL pela qual ele passa a ser
+// servido. O caminho de origem vem do renderer, que já sabe onde cada
+// fonte está porque leu isso via window.api.listarFontes() (processo
+// Electron main, que tem acesso ao sistema de arquivos do SO).
+//
+// Isso existe porque o Chromium headless usado pelo @remotion/renderer
+// na exportação NÃO tem acesso automático às fontes instaladas no
+// Windows do usuário — sem copiar o arquivo real para dentro do bundle
+// servido, a fonte "some" silenciosamente no vídeo final mesmo que
+// apareça certa no preview do editor.
+app.post('/api/fontes/registrar', (req, res) => {
+  const { caminhoOrigem, familia, peso, italico } = req.body;
+
+  if (!caminhoOrigem || typeof caminhoOrigem !== 'string') {
+    return res.status(400).json({ erro: 'Parâmetro "caminhoOrigem" é obrigatório.' });
+  }
+  if (!familia || typeof peso !== 'number') {
+    return res.status(400).json({ erro: 'Parâmetros "familia" e "peso" são obrigatórios.' });
+  }
+
+  const extensao = path.extname(caminhoOrigem).toLowerCase();
+  if (!EXTENSOES_FONTE_VALIDAS.has(extensao)) {
+    return res.status(400).json({ erro: `Extensão de fonte não suportada: "${extensao}".` });
+  }
+  if (!fs.existsSync(caminhoOrigem)) {
+    return res.status(404).json({ erro: 'Arquivo de fonte não encontrado no caminho informado.' });
+  }
+
+  try {
+    const nomeDestino = nomeArquivoFonte(familia, peso, !!italico, extensao);
+    const caminhoDestino = path.join(FONTS_DIR, nomeDestino);
+
+    // Evita recopiar se já existe uma cópia com esse nome — trocar entre
+    // as mesmas fontes repetidamente não deve reescrever o arquivo toda
+    // vez.
+    if (!fs.existsSync(caminhoDestino)) {
+      fs.copyFileSync(caminhoOrigem, caminhoDestino);
+    }
+
+    // URL ABSOLUTA (não relativa) de propósito: o preview roda dentro do
+    // navegador do Electron via proxy do Vite e resolveria uma URL
+    // relativa sem problema, mas o processo de RENDER
+    // (@remotion/renderer) carrega o bundle isolado do Remotion Bundler
+    // em outra porta/contexto — uma URL relativa lá apontaria para o
+    // próprio bundle, não para este servidor Express. Com URL absoluta,
+    // os dois contextos buscam o mesmo arquivo físico do mesmo lugar.
+    res.json({
+      url: `http://localhost:${PORT}/fonts/${nomeDestino}`,
+      familia,
+      peso,
+      italico: !!italico,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Falha ao registrar fonte.', detalhe: err.message });
   }
 });
 
@@ -200,20 +250,18 @@ app.get('/api/projetos', (req, res) => {
   res.json(lista);
 });
 
-// Atualiza o estilo padrão global do projeto. Usa atualizarEstiloPadraoModel
-// para garantir que um update parcial do campo "fundo" (ex: só a cor) não
-// apague os outros campos do fundo já configurados.
+// Atualiza o estilo padrão global do projeto.
 app.patch('/api/projetos/:id/estilo-padrao', (req, res) => {
   const projeto =
     projetosEmMemoria.get(req.params.id) ||
     carregarProjetoDoDisco(req.params.id);
   if (!projeto) return res.status(404).json({ erro: 'Projeto não encontrado.' });
 
-  const atualizado = atualizarEstiloPadraoModel(projeto, req.body);
-  projetosEmMemoria.set(req.params.id, atualizado);
-  salvarProjetoEmDisco(req.params.id, atualizado);
+  projeto.estiloPadrao = { ...projeto.estiloPadrao, ...req.body };
+  projetosEmMemoria.set(req.params.id, projeto);
+  salvarProjetoEmDisco(req.params.id, projeto);
 
-  res.json({ id: req.params.id, projeto: atualizado });
+  res.json({ id: req.params.id, projeto });
 });
 
 // Atualiza o estilo individual (override) de uma palavra específica.
@@ -227,16 +275,7 @@ app.patch('/api/projetos/:id/palavras/:palavraId', (req, res) => {
   projeto.blocos.forEach((bloco) => {
     bloco.palavras.forEach((palavra) => {
       if (palavra.id === req.params.palavraId) {
-        if (req.body === null) {
-          palavra.estilo = null;
-        } else {
-          const estiloAtual = palavra.estilo || {};
-          const novoEstilo = { ...estiloAtual, ...req.body };
-          if (req.body.fundo) {
-            novoEstilo.fundo = { ...(estiloAtual.fundo || {}), ...req.body.fundo };
-          }
-          palavra.estilo = novoEstilo;
-        }
+        palavra.estilo = { ...(palavra.estilo || {}), ...req.body };
         encontrada = true;
       }
     });
