@@ -8,8 +8,9 @@ const path = require('path');
 const { parseSRT, aplicarOffset } = require('../shared/srtParser');
 const {
   criarProjeto,
+  criarEstiloPadrao,
   aplicarPresetAPalavras,
-  resolverEstilo,
+  atualizarEstiloPadrao: atualizarEstiloPadraoModel,
 } = require('../shared/projectModel');
 
 const PORT = process.env.PORT || 4000;
@@ -33,6 +34,36 @@ app.use('/exports', express.static(EXPORTS_DIR));
 // é suficiente — não precisa de banco de dados.
 const projetosEmMemoria = new Map();
 
+// Migra projetos salvos antes da introdução dos campos estiloFonte,
+// estiloFonteSoNoDestaque e fundo. Projetos antigos têm "pesoFonte"
+// (número) em vez de "estiloFonte" (string) e não têm "fundo" nenhum.
+// Isso evita que abrir um projeto salvo antes desta atualização quebre
+// a interface (que agora espera esses campos existirem).
+function migrarProjeto(projeto) {
+  if (!projeto || !projeto.estiloPadrao) return projeto;
+
+  const padraoNovo = criarEstiloPadrao();
+  const estiloPadrao = { ...projeto.estiloPadrao };
+
+  if (estiloPadrao.estiloFonte === undefined) {
+    // pesoFonte >= 600 vira 'negrito' como aproximação razoável;
+    // o usuário pode ajustar manualmente depois.
+    estiloPadrao.estiloFonte =
+      typeof estiloPadrao.pesoFonte === 'number' && estiloPadrao.pesoFonte >= 600
+        ? 'negrito'
+        : 'normal';
+    delete estiloPadrao.pesoFonte;
+  }
+  if (estiloPadrao.estiloFonteSoNoDestaque === undefined) {
+    estiloPadrao.estiloFonteSoNoDestaque = false;
+  }
+  if (!estiloPadrao.fundo) {
+    estiloPadrao.fundo = padraoNovo.fundo;
+  }
+
+  return { ...projeto, estiloPadrao };
+}
+
 function salvarProjetoEmDisco(id, projeto) {
   const filePath = path.join(PROJECTS_DIR, `${id}.json`);
   fs.writeFileSync(filePath, JSON.stringify(projeto, null, 2), 'utf-8');
@@ -41,7 +72,8 @@ function salvarProjetoEmDisco(id, projeto) {
 function carregarProjetoDoDisco(id) {
   const filePath = path.join(PROJECTS_DIR, `${id}.json`);
   if (!fs.existsSync(filePath)) return null;
-  return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  const bruto = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  return migrarProjeto(bruto);
 }
 
 // --- Rotas ---
@@ -168,18 +200,20 @@ app.get('/api/projetos', (req, res) => {
   res.json(lista);
 });
 
-// Atualiza o estilo padrão global do projeto.
+// Atualiza o estilo padrão global do projeto. Usa atualizarEstiloPadraoModel
+// para garantir que um update parcial do campo "fundo" (ex: só a cor) não
+// apague os outros campos do fundo já configurados.
 app.patch('/api/projetos/:id/estilo-padrao', (req, res) => {
   const projeto =
     projetosEmMemoria.get(req.params.id) ||
     carregarProjetoDoDisco(req.params.id);
   if (!projeto) return res.status(404).json({ erro: 'Projeto não encontrado.' });
 
-  projeto.estiloPadrao = { ...projeto.estiloPadrao, ...req.body };
-  projetosEmMemoria.set(req.params.id, projeto);
-  salvarProjetoEmDisco(req.params.id, projeto);
+  const atualizado = atualizarEstiloPadraoModel(projeto, req.body);
+  projetosEmMemoria.set(req.params.id, atualizado);
+  salvarProjetoEmDisco(req.params.id, atualizado);
 
-  res.json({ id: req.params.id, projeto });
+  res.json({ id: req.params.id, projeto: atualizado });
 });
 
 // Atualiza o estilo individual (override) de uma palavra específica.
@@ -193,7 +227,16 @@ app.patch('/api/projetos/:id/palavras/:palavraId', (req, res) => {
   projeto.blocos.forEach((bloco) => {
     bloco.palavras.forEach((palavra) => {
       if (palavra.id === req.params.palavraId) {
-        palavra.estilo = { ...(palavra.estilo || {}), ...req.body };
+        if (req.body === null) {
+          palavra.estilo = null;
+        } else {
+          const estiloAtual = palavra.estilo || {};
+          const novoEstilo = { ...estiloAtual, ...req.body };
+          if (req.body.fundo) {
+            novoEstilo.fundo = { ...(estiloAtual.fundo || {}), ...req.body.fundo };
+          }
+          palavra.estilo = novoEstilo;
+        }
         encontrada = true;
       }
     });

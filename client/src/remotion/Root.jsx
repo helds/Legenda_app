@@ -21,7 +21,8 @@ const projetoVazio = {
   blocos: [],
   estiloPadrao: {
     fonte: 'Inter',
-    pesoFonte: 500,
+    estiloFonte: 'normal',
+    estiloFonteSoNoDestaque: false,
     tamanhoBase: 42,
     corBase: '#FFFFFF',
     corDestaque: '#EF9F27',
@@ -30,6 +31,16 @@ const projetoVazio = {
     offsetY: -6,
     duracaoTransicaoMs: 120,
     posicaoY: 0.85,
+    fundo: {
+      ativo: false,
+      cor: '#000000',
+      opacidade: 0.6,
+      paddingX: 16,
+      paddingY: 8,
+      raioBorda: 8,
+      offsetX: 0,
+      offsetY: 0,
+    },
   },
 };
 

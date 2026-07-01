@@ -9,6 +9,13 @@ import { PainelExportacao } from './components/PainelExportacao';
 
 const FPS = 30;
 
+// Os dois modos de edição do painel de propriedades:
+// - 'global': edita o estiloPadrao do projeto (afeta toda palavra sem
+//   override próprio).
+// - 'selecao': edita o(s) override(s) da palavra/grupo selecionado.
+const MODO_GLOBAL = 'global';
+const MODO_SELECAO = 'selecao';
+
 // Resolve a URL que o <video> do preview pode usar a partir do caminho
 // salvo no projeto: pode ser um upload antigo (/uploads/arquivo, servido
 // estaticamente) ou um caminho absoluto local escolhido via diálogo do
@@ -38,6 +45,7 @@ export default function App() {
   const [projeto, setProjeto] = useState(null);
   const [palavraSelecionadaId, setPalavraSelecionadaId] = useState(null);
   const [idsSelecionados, setIdsSelecionados] = useState([]);
+  const [modoEdicao, setModoEdicao] = useState(MODO_GLOBAL);
 
   const playerRef = useRef(null);
   const videoRef = useRef(null);
@@ -80,7 +88,10 @@ export default function App() {
     setProjeto(proj);
   }, []);
 
+  // Clicar numa palavra sempre muda automaticamente para o modo Seleção
+  // (item 1, segunda parte do pedido) — além do botão manual de toggle.
   const aoSelecionarPalavra = useCallback((id, comShift) => {
+    setModoEdicao(MODO_SELECAO);
     if (comShift) {
       setIdsSelecionados((prev) =>
         prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
@@ -90,6 +101,20 @@ export default function App() {
       setIdsSelecionados([]);
     }
   }, []);
+
+  // Alterna manualmente entre os dois modos. Ao voltar para Global, limpa
+  // a seleção de palavra(s) para deixar claro que o painel passou a
+  // editar o padrão do projeto.
+  function alternarModoEdicao() {
+    setModoEdicao((modoAtual) => {
+      const novoModo = modoAtual === MODO_GLOBAL ? MODO_SELECAO : MODO_GLOBAL;
+      if (novoModo === MODO_GLOBAL) {
+        setPalavraSelecionadaId(null);
+        setIdsSelecionados([]);
+      }
+      return novoModo;
+    });
+  }
 
   async function atualizarEstiloPadrao(parcial) {
     const resp = await fetch(`/api/projetos/${projetoId}/estilo-padrao`, {
@@ -148,6 +173,12 @@ export default function App() {
   const duracaoFrames = calcularDuracaoFrames(projeto.blocos);
   const urlVideo = resolverUrlVideo(projeto.caminhoVideo);
 
+  // O modo Seleção só faz sentido visualmente quando há de fato algo
+  // selecionado (palavra única ou grupo). Se o usuário alternar para
+  // Seleção sem nada selecionado ainda, mostramos uma dica em vez do
+  // painel global ou de um painel "vazio".
+  const haSelecao = !!palavraSelecionada || idsSelecionados.length > 0;
+
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', height: '100vh' }}>
       <div style={{ display: 'flex', flexDirection: 'column', padding: 20, gap: 16, overflowY: 'auto' }}>
@@ -203,7 +234,7 @@ export default function App() {
           />
         </div>
 
-        {idsSelecionados.length > 0 && (
+        {idsSelecionados.length > 0 && modoEdicao === MODO_SELECAO && (
           <div style={{ padding: 12, background: '#eef6ff', borderRadius: 8 }}>
             <p style={{ fontSize: 13, margin: '0 0 8px' }}>
               {idsSelecionados.length} palavra(s) selecionada(s) — ajuste abaixo e aplique como preset de grupo.
@@ -218,19 +249,64 @@ export default function App() {
       </div>
 
       <div style={{ borderLeft: '1px solid #eee', padding: 20, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 24 }}>
-        {palavraSelecionada ? (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button
+            onClick={alternarModoEdicao}
+            style={{
+              flex: 1,
+              padding: '8px 12px',
+              borderRadius: 6,
+              border: '1px solid #ccc',
+              background: modoEdicao === MODO_GLOBAL ? '#111' : '#fff',
+              color: modoEdicao === MODO_GLOBAL ? '#fff' : '#111',
+              cursor: 'pointer',
+            }}
+          >
+            Padrão Global
+          </button>
+          <button
+            onClick={alternarModoEdicao}
+            style={{
+              flex: 1,
+              padding: '8px 12px',
+              borderRadius: 6,
+              border: '1px solid #ccc',
+              background: modoEdicao === MODO_SELECAO ? '#111' : '#fff',
+              color: modoEdicao === MODO_SELECAO ? '#fff' : '#111',
+              cursor: 'pointer',
+            }}
+          >
+            Seleção
+          </button>
+        </div>
+
+        {modoEdicao === MODO_GLOBAL && (
+          <PainelPropriedades
+            estilo={projeto.estiloPadrao}
+            titulo="Estilo padrão do projeto"
+            aoMudar={atualizarEstiloPadrao}
+          />
+        )}
+
+        {modoEdicao === MODO_SELECAO && !haSelecao && (
+          <p style={{ fontSize: 13, color: '#888' }}>
+            Clique em uma palavra na lista à esquerda (ou shift+clique para um grupo) para editar seu estilo individual.
+          </p>
+        )}
+
+        {modoEdicao === MODO_SELECAO && palavraSelecionada && idsSelecionados.length === 0 && (
           <PainelPropriedades
             estilo={estiloEmEdicao}
             titulo={`Palavra: "${palavraSelecionada.texto}"`}
             aoMudar={(parcial) => atualizarEstiloPalavra(palavraSelecionada.id, parcial)}
             aoLimparOverride={() => limparOverride(palavraSelecionada.id)}
           />
-        ) : (
-          <PainelPropriedades
-            estilo={projeto.estiloPadrao}
-            titulo="Estilo padrão do projeto"
-            aoMudar={atualizarEstiloPadrao}
-          />
+        )}
+
+        {modoEdicao === MODO_SELECAO && idsSelecionados.length > 0 && (
+          <p style={{ fontSize: 13, color: '#888' }}>
+            Use o painel abaixo da lista de palavras para aplicar o estilo ao grupo selecionado.
+          </p>
         )}
 
         <hr style={{ border: 'none', borderTop: '1px solid #eee' }} />

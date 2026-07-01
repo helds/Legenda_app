@@ -1,0 +1,23 @@
+# server/audio_sync/requirements.txt
+#
+# Dependências do serviço de forced alignment + análise de volume.
+# Instale em um ambiente virtual dedicado:
+#
+#   python3 -m venv venv
+#   source venv/bin/activate  (ou venv\Scripts\activate no Windows)
+#   pip install -r requirements.txt
+#
+# Requer também o ffmpeg instalado no sistema (usado pelo librosa/whisperx
+# para decodificar áudio de qualquer formato de vídeo/áudio de entrada):
+#   - Ubuntu/Debian: sudo apt install ffmpeg
+#   - macOS: brew install ffmpeg
+#   - Windows: https://ffmpeg.org/download.html
+#
+# GPU (opcional, mas recomendado para arquivos longos): requer CUDA
+# instalado e uma versão de torch compatível. Sem GPU, o script roda em
+# CPU automaticamente (mais lento, mas funcional).
+
+torch>=2.0.0
+whisperx>=3.1.1
+librosa>=0.10.1
+numpy>=1.24.0

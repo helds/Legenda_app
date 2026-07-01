@@ -150,6 +150,37 @@ ipcMain.handle("dialog:openSrt", async () => {
 
 });
 
+// Lista as fontes instaladas no sistema operacional do usuário (Windows,
+// macOS, Linux), usada pelo seletor de fonte na interface para oferecer
+// mais opções além das fontes web-safe embutidas. A lib font-list é
+// carregada de forma "lazy" (require dentro do handler) para não atrasar
+// a inicialização do app caso o módulo nativo demore para carregar, e
+// para isolar falhas: se a lib não estiver instalada/buildada para a
+// plataforma atual, devolvemos uma lista vazia e o frontend cai para o
+// fallback fixo em vez de quebrar o app inteiro.
+ipcMain.handle("sistema:listarFontes", async () => {
+
+    try {
+
+        const fontList = require("font-list");
+        const fontes = await fontList.getFonts({ disableQuoting: true });
+
+        // Remove duplicatas e ordena alfabeticamente.
+        const unicas = Array.from(new Set(fontes)).sort((a, b) =>
+            a.localeCompare(b, "pt-BR")
+        );
+
+        return unicas;
+
+    } catch (err) {
+
+        console.error("Falha ao listar fontes do sistema:", err);
+        return [];
+
+    }
+
+});
+
 app.on("window-all-closed", () => {
 
     if (backend)
