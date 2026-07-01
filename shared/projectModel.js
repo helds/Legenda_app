@@ -1,11 +1,3 @@
-// shared/projectModel.js
-// Define a estrutura de um "projeto" (vídeo + legendas + estilos) e a
-// lógica de resolução de estilo: cada palavra herda do estilo padrão do
-// projeto a menos que tenha overrides próprios.
-
-// Estilo padrão de um projeto novo. Esses valores podem ser editados na
-// aba "Padrões" da interface e afetam todas as palavras que não têm
-// override individual.
 function criarEstiloPadrao() {
   return {
     fonte: 'Inter',
@@ -20,9 +12,15 @@ function criarEstiloPadrao() {
     corDestaque: '#EF9F27', // cor quando a palavra está "ativa"
     escalaDestaque: 1.3, // multiplicador de tamanho no pico do destaque
     offsetX: 0, // deslocamento horizontal no pico do destaque, px
-    offsetY: -6, // deslocamento vertical no pico do destaque, px
+    offsetY: 0, // deslocamento vertical no pico do destaque, px
     duracaoTransicaoMs: 120, // tempo de subida/descida da escala
     posicaoY: 0.85, // posição vertical na tela, 0 = topo, 1 = base
+    // Unidade de revelação da animação de destaque dentro da palavra:
+    // 'palavra' = a palavra inteira acende de uma vez (sem sub-divisão);
+    // 'letra'   = cada letra acende individualmente, em sequência;
+    // 'silaba'  = cada sílaba acende individualmente, em sequência
+    //             (separação via shared/silabizador.js).
+    modoRevelacao: 'palavra',
   };
 }
 
