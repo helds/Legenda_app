@@ -18,8 +18,6 @@ const MODO_SELECAO = 'selecao';
 const TELA_EDITOR = 'editor';
 const TELA_TIMELINE = 'timeline';
 
-// CORREÇÃO (bugfix preview sumindo): Error Boundary ao redor da área de
-// preview — ver histórico de comentários da versão anterior.
 class PreviewErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -54,10 +52,7 @@ class PreviewErrorBoundary extends React.Component {
           <strong style={{ fontFamily: 'var(--font-ui)' }}>Erro ao renderizar o preview.</strong>
           {'\n'}
           Isso normalmente acontece quando alguma palavra do projeto tem
-          dados de tempo ou texto inválidos (comum logo após uma
-          sincronização de áudio malsucedida). O restante da interface
-          continua funcionando — você pode tentar sincronizar novamente
-          ou restaurar um projeto salvo anteriormente.
+          dados de tempo ou texto inválidos.
           {'\n\n'}
           <strong style={{ fontFamily: 'var(--font-ui)' }}>Detalhe técnico:</strong>
           {'\n'}
@@ -91,6 +86,42 @@ function calcularDuracaoFrames(blocos) {
   return Math.ceil((max + 0.5) * FPS) || FPS * 5;
 }
 
+function aplicarRippleTrim(blocos, { palavraId, lado, novoTempo, duracaoMinima }) {
+  return blocos.map((bloco) => {
+    const indice = (bloco.palavras || []).findIndex((p) => p.id === palavraId);
+    if (indice === -1) return bloco;
+
+    const palavras = bloco.palavras.map((p) => ({ ...p }));
+    const alvo = palavras[indice];
+    const anterior = indice > 0 ? palavras[indice - 1] : null;
+    const proxima = indice < palavras.length - 1 ? palavras[indice + 1] : null;
+
+    if (lado === 'direita') {
+      const limiteSuperior = proxima
+        ? Math.min(bloco.fim, proxima.fim - duracaoMinima)
+        : bloco.fim;
+      const novoFim = Math.max(alvo.inicio + duracaoMinima, Math.min(novoTempo, limiteSuperior));
+
+      alvo.fim = Number(novoFim.toFixed(3));
+      if (proxima) {
+        proxima.inicio = Number(novoFim.toFixed(3));
+      }
+    } else {
+      const limiteInferior = anterior
+        ? Math.max(bloco.inicio, anterior.inicio + duracaoMinima)
+        : bloco.inicio;
+      const novoInicio = Math.min(alvo.fim - duracaoMinima, Math.max(novoTempo, limiteInferior));
+
+      alvo.inicio = Number(novoInicio.toFixed(3));
+      if (anterior) {
+        anterior.fim = Number(novoInicio.toFixed(3));
+      }
+    }
+
+    return { ...bloco, palavras };
+  });
+}
+
 export default function App() {
   const [projetoId, setProjetoId] = useState(null);
   const [projeto, setProjeto] = useState(null);
@@ -101,21 +132,67 @@ export default function App() {
   const [tempoAtualSegundos, setTempoAtualSegundos] = useState(0);
   const [estaTocando, setEstaTocando] = useState(false);
 
+  const [mostrarSincronizacao, setMostrarSincronizacao] = useState(false);
+  const [alturaPainelFerramentas, setAlturaPainelFerramentas] = useState(300);
+  const [estaArrastandoPainel, setEstaArrastandoPainel] = useState(false);
+
+  const [dimensoesVideo, setDimensoesVideo] = useState({ largura: 1080, altura: 1920 });
+
   const playerRef = useRef(null);
-  // Guardamos os nós dos slots em STATE (não em ref) porque precisamos
-  // que o React re-renderize quando eles forem anexados ao DOM pela
-  // primeira vez — é isso que permite ao createPortal encontrar um
-  // alvo. Usar useState com atualização funcional evita o loop
-  // "Maximum update depth exceeded": o setState só de fato dispara
-  // trabalho novo quando o nó muda (comparação de identidade), então
-  // re-registrar o MESMO nó em renders subsequentes é um no-op.
   const [slotEditor, setSlotEditor] = useState(null);
   const [slotTimeline, setSlotTimeline] = useState(null);
+  const debounceResizeRef = useRef(null);
 
   const aoCriarProjeto = useCallback((id, proj) => {
     setProjetoId(id);
     setProjeto(proj);
   }, []);
+
+  useEffect(() => {
+    if (!projeto) return;
+    
+    if (projeto.largura && projeto.altura) {
+      setDimensoesVideo({ largura: projeto.largura, altura: projeto.altura });
+      return;
+    }
+
+    const url = resolverUrlVideo(projeto.caminhoVideo);
+    if (url) {
+      const v = document.createElement('video');
+      v.src = url;
+      v.onloadedmetadata = () => {
+        if (v.videoWidth && v.videoHeight) {
+          setDimensoesVideo({ largura: v.videoWidth, altura: v.videoHeight });
+        }
+      };
+    } else {
+      setDimensoesVideo({ largura: 1080, altura: 1920 }); 
+    }
+  }, [projeto]);
+
+  useEffect(() => {
+    if (!estaArrastandoPainel) return;
+
+    function lidarComArrastar(e) {
+      e.preventDefault();
+      const paddingDoApp = 24; 
+      const novaAltura = window.innerHeight - e.clientY - paddingDoApp;
+      const alturaSegura = Math.max(100, Math.min(novaAltura, window.innerHeight * 0.65));
+      setAlturaPainelFerramentas(alturaSegura);
+    }
+
+    function pararArrastar() {
+      setEstaArrastandoPainel(false);
+    }
+
+    window.addEventListener('mousemove', lidarComArrastar);
+    window.addEventListener('mouseup', pararArrastar);
+
+    return () => {
+      window.removeEventListener('mousemove', lidarComArrastar);
+      window.removeEventListener('mouseup', pararArrastar);
+    };
+  }, [estaArrastandoPainel]);
 
   const aoSelecionarPalavra = useCallback((id, comShift) => {
     setModoEdicao(MODO_SELECAO);
@@ -185,6 +262,37 @@ export default function App() {
     }
   }
 
+  const aoRedimensionarPalavra = useCallback(
+    ({ palavraId, lado, novoTempo, duracaoMinima }) => {
+      setProjeto((projetoAtual) => {
+        if (!projetoAtual) return projetoAtual;
+        const novosBlocos = aplicarRippleTrim(projetoAtual.blocos, {
+          palavraId,
+          lado,
+          novoTempo,
+          duracaoMinima,
+        });
+        return { ...projetoAtual, blocos: novosBlocos };
+      });
+
+      if (debounceResizeRef.current) clearTimeout(debounceResizeRef.current);
+      debounceResizeRef.current = setTimeout(() => {
+        setProjeto((projetoAtual) => {
+          if (!projetoAtual || !projetoId) return projetoAtual;
+          fetch(`/api/projetos/${projetoId}/blocos`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ blocos: projetoAtual.blocos }),
+          }).catch((err) => {
+            console.error('Falha:', err);
+          });
+          return projetoAtual;
+        });
+      }, 250);
+    },
+    [projetoId]
+  );
+
   useEffect(() => {
     const player = playerRef.current;
     if (!player) return undefined;
@@ -225,18 +333,6 @@ export default function App() {
     }
   }, []);
 
-  // Callback de ref estável (useCallback com deps vazias): o React só
-  // invoca isso quando o elemento monta/desmonta, nunca a cada render —
-  // e a atualização funcional do setState garante que registrar o MESMO
-  // nó novamente não causa um novo render.
-  //
-  // IMPORTANTE: estes dois hooks precisam ficar ANTES de qualquer early
-  // return (como o `if (!projeto)` logo abaixo). Declarar hooks depois
-  // de um return condicional viola as Rules of Hooks — no primeiro
-  // render sem projeto, esses useCallback nunca rodam; assim que um
-  // projeto é criado, o React de repente vê "mais hooks do que no
-  // render anterior" e derruba a árvore com o erro
-  // "Rendered more hooks than during the previous render".
   const registrarSlotEditor = useCallback((no) => {
     setSlotEditor((atual) => (atual === no ? atual : no));
   }, []);
@@ -247,6 +343,11 @@ export default function App() {
   if (!projeto) {
     return <TelaImportacao aoCriarProjeto={aoCriarProjeto} />;
   }
+
+  const larguraProjeto = dimensoesVideo.largura;
+  const alturaProjeto = dimensoesVideo.altura;
+  
+  const videoDeveFicarNaDireita = larguraProjeto > 1080;
 
   const palavraSelecionada = palavraSelecionadaId
     ? encontrarPalavra(projeto.blocos, palavraSelecionadaId)
@@ -276,8 +377,8 @@ export default function App() {
             component={CaptionComposition}
             durationInFrames={duracaoFrames}
             fps={FPS}
-            compositionWidth={1920}
-            compositionHeight={1080}
+            compositionWidth={larguraProjeto} 
+            compositionHeight={alturaProjeto}
             style={{ width: '100%', height: '100%' }}
             controls={telaAtual === TELA_EDITOR}
             inputProps={{
@@ -295,7 +396,7 @@ export default function App() {
     <>
       {playerPortado}
 
-      <div style={{ display: telaAtual === TELA_TIMELINE ? 'block' : 'none' }}>
+      <div style={{ display: telaAtual === TELA_TIMELINE ? 'block' : 'none', height: '100vh', width: '100vw' }}>
         <TelaTimeline
           projeto={projeto}
           urlAudio={urlVideo}
@@ -309,79 +410,196 @@ export default function App() {
           aoSelecionarPalavra={aoSelecionarPalavra}
           aoVoltarParaEditor={() => setTelaAtual(TELA_EDITOR)}
           registrarSlotDoPlayer={registrarSlotTimeline}
+          aoRedimensionarPalavra={aoRedimensionarPalavra}
         />
       </div>
 
-      <div className="app-shell" style={{ display: telaAtual === TELA_EDITOR ? 'grid' : 'none' }}>
-        <div className="app-column">
-          <div className="app-header">
-            <h2 className="app-title">
-              {projeto.nome}
-            </h2>
-            <button className="btn" onClick={() => setTelaAtual(TELA_TIMELINE)}>
-              Abrir Timeline →
-            </button>
+      <div 
+        className="app-shell" 
+        style={{ 
+          display: telaAtual === TELA_EDITOR ? 'flex' : 'none', 
+          gap: '24px', 
+          flexDirection: 'row',
+          height: '100vh',     /* Ocupa exatamente a janela toda */
+          width: '100vw',      /* Garante a largura também */
+          padding: '24px',     /* Espaço interno seguro */
+          boxSizing: 'border-box', /* O SEGREDO: o padding não aumenta o tamanho total de 100vh! */
+          overflow: 'hidden'
+        }}
+      >
+        {/* COLUNA ESQUERDA: Sessão Principal de Trabalho */}
+        <div style={{ 
+          flex: 1, 
+          minWidth: 0, 
+          display: 'flex', 
+          flexDirection: 'column', 
+          gap: '20px',
+          minHeight: 0 /* Em vez de height: 100%, isto impede overflow */
+        }}>
+          
+          {/* CABEÇALHO */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
+            <h2 className="app-title" style={{ margin: 0 }}>{projeto.nome}</h2>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button 
+                className={`btn ${mostrarSincronizacao ? 'btn--primary' : ''}`}
+                onClick={() => setMostrarSincronizacao(!mostrarSincronizacao)}
+                style={{ padding: '8px 16px', fontWeight: 600, borderColor: 'var(--accent-amber)' }}
+              >
+                {mostrarSincronizacao ? 'Fechar Sincronização' : 'Sincronização Automática'}
+              </button>
+              
+              <button className="btn" onClick={() => setTelaAtual(TELA_TIMELINE)}>
+                Abrir Timeline →
+              </button>
+            </div>
           </div>
 
-          <div
-            ref={registrarSlotEditor}
-            style={{
-              width: '100%',
-              height: 'min(58vh, calc((100vw - 400px) * 9 / 16))',
-              minHeight: 360,
-              borderRadius: 'var(--radius-lg)',
-              overflow: 'hidden',
-              background: 'var(--bg-void)',
-              border: '1px solid var(--hairline)',
-              boxShadow: 'var(--shadow-panel)',
-            }}
-          />
-
           {!urlVideo && (
-            <p className="status-line status-line--info">
+            <p className="status-line status-line--info" style={{ margin: 0, flexShrink: 0 }}>
               Nenhum vídeo de referência selecionado — o preview mostra só a legenda.
             </p>
           )}
 
-          <div>
-            <h3 className="panel-title" style={{ marginBottom: 10, fontSize: 13 }}>
-              Palavras <span style={{ textTransform: 'none', color: 'var(--text-tertiary)', fontWeight: 400, letterSpacing: 0 }}>
-                — clique para editar, shift+clique para grupo
-              </span>
-            </h3>
-            <ListaPalavras
-              blocos={projeto.blocos}
-              palavraSelecionadaId={palavraSelecionadaId}
-              idsSelecionados={idsSelecionados}
-              aoSelecionarPalavra={aoSelecionarPalavra}
-            />
+          {/* ÁREA DE CONTEÚDO PRINCIPAL (Video + Lista) */}
+          <div style={{
+            display: 'flex',
+            flexDirection: videoDeveFicarNaDireita ? 'row-reverse' : 'row',
+            gap: '24px',
+            flex: 1, 
+            minHeight: 0, /* ESSENCIAL PARA FLEXBOX NÃO TRANSBORDAR */
+            alignItems: 'stretch'
+          }}>
+            
+            {/* VÍDEO PREVIEW */}
+            <div style={{
+              width: videoDeveFicarNaDireita ? '50%' : '320px', 
+              flexShrink: 0,
+              display: 'flex',
+              flexDirection: 'column'
+            }}>
+              <div
+                ref={registrarSlotEditor}
+                style={{
+                  width: '100%',
+                  aspectRatio: `${larguraProjeto} / ${alturaProjeto}`,
+                  borderRadius: 'var(--radius-lg)',
+                  overflow: 'hidden',
+                  background: 'var(--bg-void)',
+                  border: '1px solid var(--hairline)',
+                  boxShadow: 'var(--shadow-panel)',
+                }}
+              />
+            </div>
+
+            {/* LISTA DE PALAVRAS E OPÇÕES (COLUNA FLEXÍVEL) */}
+            <div style={{ 
+              flex: 1, 
+              display: 'flex', 
+              flexDirection: 'column', 
+              minWidth: 0,
+              minHeight: 0 /* Substitui height: 100% para evitar "leaking" */
+            }}>
+              <h3 className="panel-title" style={{ marginBottom: 10, fontSize: 13, flexShrink: 0 }}>
+                Palavras <span style={{ textTransform: 'none', color: 'var(--text-tertiary)', fontWeight: 400, letterSpacing: 0 }}>
+                  — clique para editar, shift+clique para grupo
+                </span>
+              </h3>
+              
+              {/* CONTENTOR DA LISTA DE PALAVRAS */}
+              <div style={{ 
+                flex: 1, 
+                minHeight: 0, 
+                overflowY: 'auto', 
+                border: '1px solid var(--hairline)',
+                borderRadius: '8px',
+                background: 'var(--bg-panel)',
+                padding: '12px', /* Previne que as palavras colem nos limites do container */
+                paddingBottom: '24px' /* Espaço extra no fundo do scroll */
+              }}>
+                <ListaPalavras
+                  blocos={projeto.blocos}
+                  palavraSelecionadaId={palavraSelecionadaId}
+                  idsSelecionados={idsSelecionados}
+                  aoSelecionarPalavra={aoSelecionarPalavra}
+                />
+              </div>
+              
+              {/* PAINEL DE PRESETS DE GRUPO */}
+              {idsSelecionados.length > 0 && modoEdicao === MODO_SELECAO && (
+                <div className="callout callout--blue" style={{ marginTop: '20px', flexShrink: 0 }}>
+                  <p style={{ margin: '0 0 10px' }}>
+                    {idsSelecionados.length} palavra(s) selecionada(s) — ajuste abaixo e aplique como preset de grupo.
+                  </p>
+                  <PainelPropriedades
+                    estilo={projeto.estiloPadrao}
+                    titulo="Aplicar a grupo selecionado"
+                    aoMudar={aplicarPresetAoGrupo}
+                  />
+                </div>
+              )}
+            </div>
+
           </div>
 
-          {idsSelecionados.length > 0 && modoEdicao === MODO_SELECAO && (
-            <div className="callout callout--blue">
-              <p style={{ margin: '0 0 10px' }}>
-                {idsSelecionados.length} palavra(s) selecionada(s) — ajuste abaixo e aplique como preset de grupo.
-              </p>
-              <PainelPropriedades
-                estilo={projeto.estiloPadrao}
-                titulo="Aplicar a grupo selecionado"
-                aoMudar={aplicarPresetAoGrupo}
-              />
+          {/* PAINEL INFERIOR TIPO VS CODE */}
+          {mostrarSincronizacao && (
+            <div 
+              style={{
+                height: alturaPainelFerramentas,
+                flexShrink: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                position: 'relative',
+                background: 'var(--bg-panel)',
+                borderRadius: '8px',
+                border: '1px solid rgba(239, 159, 39, 0.3)',
+                boxShadow: '0 -4px 12px rgba(0,0,0,0.1)'
+              }}
+            >
+              <div 
+                onMouseDown={() => setEstaArrastandoPainel(true)}
+                style={{
+                  height: '8px',
+                  width: '100%',
+                  cursor: 'row-resize',
+                  position: 'absolute',
+                  top: '-4px',
+                  zIndex: 10,
+                  display: 'flex',
+                  justifyContent: 'center',
+                  alignItems: 'center'
+                }}
+              >
+                <div style={{ width: '40px', height: '4px', background: 'rgba(239, 159, 39, 0.5)', borderRadius: '4px' }} />
+              </div>
+              
+              <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
+                <PainelSincronizacaoAudio
+                  caminhoAudio={projeto.caminhoVideo}
+                  textoInicial={textoAtualDasLegendas}
+                  aoConcluir={aoConcluirSincronizacaoAudio}
+                  urlEndpointSincronizacao="/api/audio/sincronizar"
+                  projetoId={projetoId}
+                />
+              </div>
             </div>
           )}
 
-          <hr className="divider" />
-
-          <PainelSincronizacaoAudio
-            caminhoAudio={projeto.caminhoVideo}
-            textoInicial={textoAtualDasLegendas}
-            aoConcluir={aoConcluirSincronizacaoAudio}
-            urlEndpointSincronizacao="/api/audio/sincronizar"
-            projetoId={projetoId}
-          />
         </div>
 
-        <div className="app-column app-column--rail">
+        {/* COLUNA DIREITA (RAIL) */}
+        <div style={{ 
+          width: '340px', 
+          flexShrink: 0, 
+          display: 'flex', 
+          flexDirection: 'column', 
+          gap: '20px',
+          minHeight: 0, /* Substitui height: 100% */
+          overflowY: 'auto',
+          paddingRight: '10px' 
+        }}>
+          
           <div className="segmented">
             <button
               className={`btn ${modoEdicao === MODO_GLOBAL ? 'is-active' : ''}`}
@@ -427,11 +645,20 @@ export default function App() {
             </div>
           )}
 
-          <hr className="divider" />
+          <hr className="divider" style={{ margin: '10px 0', borderTop: '1px solid var(--hairline)' }} />
 
           <PainelExportacao projetoId={projetoId} />
         </div>
       </div>
+      
+      {estaArrastandoPainel && (
+        <div style={{
+          position: 'fixed',
+          top: 0, left: 0, right: 0, bottom: 0,
+          cursor: 'row-resize',
+          zIndex: 9999
+        }} />
+      )}
     </>
   );
 }

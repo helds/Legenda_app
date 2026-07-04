@@ -306,6 +306,54 @@ app.patch('/api/projetos/:id/palavras/:palavraId', (req, res) => {
   res.json({ id: req.params.id, projeto });
 });
 
+// Atualiza os `blocos` inteiros do projeto — usado pelo ripple trim da
+// tela de Timeline (arrastar a borda de uma palavra e empurrar a
+// vizinha). O client já calcula o novo array de blocos localmente (de
+// forma otimista, a cada pixel arrastado) e manda o resultado final
+// aqui com um debounce curto, então esta rota só valida o formato
+// básico e substitui — sem recalcular nada de timing no servidor.
+app.patch('/api/projetos/:id/blocos', (req, res) => {
+  const projeto =
+    projetosEmMemoria.get(req.params.id) ||
+    carregarProjetoDoDisco(req.params.id);
+  if (!projeto) return res.status(404).json({ erro: 'Projeto não encontrado.' });
+
+  const { blocos } = req.body;
+  if (!Array.isArray(blocos)) {
+    return res.status(400).json({ erro: 'Campo "blocos" precisa ser um array.' });
+  }
+
+  // Validação estrutural mínima — mesma ideia de "nunca deixar o
+  // servidor aceitar algo que quebra o parser no client depois". Não
+  // valida os valores de tempo em si (isso já é garantido pelo
+  // aplicarRippleTrim no client), só o formato.
+  const blocosValidos = blocos.every(
+    (bloco) =>
+      bloco &&
+      typeof bloco.id === 'string' &&
+      typeof bloco.inicio === 'number' &&
+      typeof bloco.fim === 'number' &&
+      Array.isArray(bloco.palavras) &&
+      bloco.palavras.every(
+        (palavra) =>
+          palavra &&
+          typeof palavra.id === 'string' &&
+          typeof palavra.texto === 'string' &&
+          typeof palavra.inicio === 'number' &&
+          typeof palavra.fim === 'number'
+      )
+  );
+  if (!blocosValidos) {
+    return res.status(400).json({ erro: 'Formato de "blocos" inválido.' });
+  }
+
+  projeto.blocos = blocos;
+  projetosEmMemoria.set(req.params.id, projeto);
+  salvarProjetoEmDisco(req.params.id, projeto);
+
+  res.json({ id: req.params.id, projeto });
+});
+
 // Aplica um preset de estilo a uma lista de palavras (seleção em grupo).
 app.post('/api/projetos/:id/aplicar-preset', (req, res) => {
   const projeto =
@@ -336,13 +384,13 @@ app.post('/api/audio/sincronizar', async (req, res) => {
   const { projetoId, caminhoAudio, texto, idioma } = req.body;
 
   if (!caminhoAudio || typeof caminhoAudio !== 'string') {
-    return res.status(400).json({ erro: 'Par�metro "caminhoAudio" � obrigat�rio.' });
+    return res.status(400).json({ erro: 'Par�metro "caminhoAudio" � obrigat�rio.' });
   }
 
   try {
     const projeto = projetoId ? carregarProjeto(projetoId) : null;
     if (projetoId && !projeto) {
-      return res.status(404).json({ erro: 'Projeto n�o encontrado.' });
+      return res.status(404).json({ erro: 'Projeto n�o encontrado.' });
     }
 
     const textoParaAlignment = projeto
@@ -350,7 +398,7 @@ app.post('/api/audio/sincronizar', async (req, res) => {
       : texto;
 
     if (!textoParaAlignment || !textoParaAlignment.trim()) {
-      return res.status(400).json({ erro: 'O projeto n�o possui texto revisado para sincronizar.' });
+      return res.status(400).json({ erro: 'O projeto n�o possui texto revisado para sincronizar.' });
     }
 
     const resultado = await sincronizarAudioComTexto({
@@ -378,7 +426,7 @@ app.post('/api/audio/sincronizar', async (req, res) => {
     res.json(resultado);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ erro: 'Falha na sincroniza��o de �udio.', detalhe: err.message });
+    res.status(500).json({ erro: 'Falha na sincroniza��o de �udio.', detalhe: err.message });
   }
 });
 // Dispara a exportação (delegado ao módulo Remotion — ver server/render.js)

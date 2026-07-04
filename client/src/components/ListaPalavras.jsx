@@ -3,7 +3,7 @@ import React from 'react';
 
 export function ListaPalavras({ blocos, palavraSelecionadaId, idsSelecionados, aoSelecionarPalavra }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 400, overflowY: 'auto' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4,overflowY: 'auto' }}>
       {blocos.map((bloco) => (
         <div key={bloco.id} className="word-block">
           <div className="word-block__time">

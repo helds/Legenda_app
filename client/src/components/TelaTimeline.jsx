@@ -1,6 +1,6 @@
 // client/src/components/TelaTimeline.jsx
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { useWaveformPeaks, reamostrarPicos } from '../hooks/useWaveformPeaks';
+import { useWavesurfer } from '../hooks/useWavesurfer';
 
 const PX_POR_SEGUNDO_BASE = 72;
 const ZOOM_MIN = 0.25;
@@ -10,9 +10,11 @@ const ALTURA_REGUA = 34;
 const ALTURA_TRILHA_LEGENDA = 58;
 const LARGURA_ROTULO = 76;
 
+const DURACAO_MINIMA_PALAVRA = 0.08;
+const LARGURA_ALCA_PX = 8;
+
 const COR_FUNDO = '#101114';
 const COR_PAINEL = '#1c1e23';
-const COR_CONTAINER = '#17181c';
 const COR_HAIRLINE = '#2b2d34';
 const COR_TEXTO = '#edece7';
 const COR_TEXTO_SEC = '#9a9ca4';
@@ -58,30 +60,124 @@ function coletarPalavras(blocos) {
   );
 }
 
+function useAtalhosDeTeclado({
+  aoAlternarPlayPause,
+  aoBuscarTempo,
+  tempoAtualSegundosRef,
+  duracaoRef,
+  setZoom,
+  fps = 30,
+}) {
+  useEffect(() => {
+    function aoTeclar(evento) {
+      const alvoEhCampoDeTexto =
+        evento.target &&
+        ['INPUT', 'TEXTAREA', 'SELECT'].includes(evento.target.tagName);
+      if (alvoEhCampoDeTexto) return;
+
+      const tempoAtual = tempoAtualSegundosRef.current;
+      const duracao = duracaoRef.current;
+      const passoFrame = 1 / fps;
+
+      switch (evento.key) {
+        case ' ':
+          evento.preventDefault();
+          aoAlternarPlayPause?.();
+          break;
+        case 'ArrowLeft':
+          evento.preventDefault();
+          aoBuscarTempo?.(Math.max(0, tempoAtual - (evento.shiftKey ? 1 : passoFrame)));
+          break;
+        case 'ArrowRight':
+          evento.preventDefault();
+          aoBuscarTempo?.(Math.min(duracao, tempoAtual + (evento.shiftKey ? 1 : passoFrame)));
+          break;
+        case 'j':
+        case 'J':
+          aoBuscarTempo?.(Math.max(0, tempoAtual - 1));
+          break;
+        case 'l':
+        case 'L':
+          aoBuscarTempo?.(Math.min(duracao, tempoAtual + 1));
+          break;
+        case 'Home':
+          evento.preventDefault();
+          aoBuscarTempo?.(0);
+          break;
+        case 'End':
+          evento.preventDefault();
+          aoBuscarTempo?.(duracao);
+          break;
+        case '+':
+        case '=':
+          setZoom((z) => Math.min(ZOOM_MAX, Number((z * 1.25).toFixed(3))));
+          break;
+        case '-':
+        case '_':
+          setZoom((z) => Math.max(ZOOM_MIN, Number((z / 1.25).toFixed(3))));
+          break;
+        default:
+          break;
+      }
+    }
+
+    window.addEventListener('keydown', aoTeclar);
+    return () => window.removeEventListener('keydown', aoTeclar);
+  }, [aoAlternarPlayPause, aoBuscarTempo, tempoAtualSegundosRef, duracaoRef, setZoom, fps]);
+}
+
 export function TelaTimeline({
   projeto,
   urlAudio,
   duracaoSegundos,
   tempoAtualSegundos = 0,
   aoBuscarTempo,
-  estaTocando = false,
-  aoAlternarPlayPause,
   palavraSelecionadaId,
   idsSelecionados,
   aoSelecionarPalavra,
   aoVoltarParaEditor,
   registrarSlotDoPlayer,
+  aoRedimensionarPalavra,
 }) {
   const [zoom, setZoom] = useState(1);
   const [seguirPlayhead, setSeguirPlayhead] = useState(true);
-  const containerScrollRef = useRef(null);
-  const arrastandoRef = useRef(false);
+  
+  const [tocandoLocal, setTocandoLocal] = useState(false);
 
-  const { picos, duracaoSegundos: duracaoAudioDecodificado, carregando, erro } =
-    useWaveformPeaks(urlAudio);
+  const containerScrollRef = useRef(null);
+  const faixaRef = useRef(null);
+  const containerPlayerRef = useRef(null);
+
+  const arrastandoAgulhaRef = useRef(false);
+  const pointerIdAgulhaRef = useRef(null);
+  const resizeAtivoRef = useRef(null);
+
+  // ADIÇÃO: Controla os scrolls feitos automaticamente pelo código
+  const ignorarScroll = useRef(false);
+  const timeoutScroll = useRef(null);
+
+  const pxPorSegundo = PX_POR_SEGUNDO_BASE * zoom;
+
+  const wavesurferContainerRef = useRef(null);
+  const { 
+    pronto: temWaveformReal, 
+    carregando, 
+    erro, 
+    duracaoSegundos: duracaoAudioDecodificado, 
+    seekTo: atualizarProgressoWavesurfer,
+    play: playWave,
+    pause: pauseWave,
+  } = useWavesurfer({
+    containerRef: wavesurferContainerRef,
+    url: urlAudio,
+    pxPorSegundo: pxPorSegundo,
+    corOnda: COR_WAVE,
+    corProgresso: COR_AMBAR,
+    altura: ALTURA_ONDA,
+    onSeek: aoBuscarTempo
+  });
 
   const duracao = Math.max(1, limitarNumero(duracaoSegundos || duracaoAudioDecodificado, 1));
-  const pxPorSegundo = PX_POR_SEGUNDO_BASE * zoom;
   const larguraTotal = Math.max(800, Math.ceil(duracao * pxPorSegundo));
 
   const palavras = useMemo(() => coletarPalavras(projeto?.blocos), [projeto]);
@@ -91,13 +187,6 @@ export function TelaTimeline({
   );
 
   const colunasVisiveis = Math.max(100, Math.min(3000, Math.floor(larguraTotal / 2)));
-  const picosReamostrados = useMemo(
-    () => reamostrarPicos(picos, colunasVisiveis),
-    [picos, colunasVisiveis]
-  );
-
-  const temWaveformReal = !!picos && !erro;
-
   const picosFallback = useMemo(() => {
     if (temWaveformReal || carregando) return [];
     return Array.from({ length: colunasVisiveis }, (_, i) => {
@@ -107,61 +196,211 @@ export function TelaTimeline({
     });
   }, [temWaveformReal, carregando, colunasVisiveis]);
 
-  const picosParaDesenhar = temWaveformReal ? picosReamostrados : picosFallback;
+  const posicaoPlayheadPx = tempoAtualSegundos * pxPorSegundo;
 
-  const posicaoPlayheadPx = (tempoAtualSegundos / duracao) * larguraTotal;
+  const tempoAtualSegundosRef = useRef(tempoAtualSegundos);
+  const duracaoRef = useRef(duracao);
+  duracaoRef.current = duracao;
+  
+  const tocandoLocalRef = useRef(false);
+  tocandoLocalRef.current = tocandoLocal;
+
+  useAtalhosDeTeclado({
+    aoAlternarPlayPause: () => setTocandoLocal((prev) => !prev),
+    aoBuscarTempo,
+    tempoAtualSegundosRef,
+    duracaoRef,
+    setZoom,
+  });
+
+  useEffect(() => {
+    if (!temWaveformReal) return;
+    if (tocandoLocal) {
+      playWave?.();
+    } else {
+      pauseWave?.();
+    }
+  }, [tocandoLocal, temWaveformReal, playWave, pauseWave]);
+
+  useEffect(() => {
+    if (!tocandoLocal) {
+      tempoAtualSegundosRef.current = tempoAtualSegundos;
+      const posicaoPx = tempoAtualSegundos * pxPorSegundo;
+      const agulha = document.getElementById('agulha-playhead');
+      if (agulha) agulha.style.left = `${posicaoPx}px`;
+      
+      const contador = document.getElementById('contador-tempo');
+      if (contador) contador.innerText = `${formatarTempo(tempoAtualSegundos)} / ${formatarTempo(duracaoRef.current)}`;
+
+      if (temWaveformReal && atualizarProgressoWavesurfer) {
+        atualizarProgressoWavesurfer(tempoAtualSegundos);
+      }
+    }
+  }, [tempoAtualSegundos, tocandoLocal, pxPorSegundo, temWaveformReal, atualizarProgressoWavesurfer]);
+
+  useEffect(() => {
+    if (!tocandoLocal) return;
+
+    let animId;
+    let ultimoFrame = performance.now();
+
+    const loopLocal = (tempoAgoraMs) => {
+      const deltaSegundos = (tempoAgoraMs - ultimoFrame) / 1000;
+      ultimoFrame = tempoAgoraMs;
+
+      let novoTempo = tempoAtualSegundosRef.current + deltaSegundos;
+
+      if (novoTempo >= duracaoRef.current) {
+        novoTempo = duracaoRef.current;
+        setTocandoLocal(false);
+      }
+
+      tempoAtualSegundosRef.current = novoTempo;
+      const posicaoRealPx = novoTempo * pxPorSegundo;
+
+      const agulha = document.getElementById('agulha-playhead');
+      if (agulha) agulha.style.left = `${posicaoRealPx}px`;
+
+      const contador = document.getElementById('contador-tempo');
+      if (contador) contador.innerText = `${formatarTempo(novoTempo)} / ${formatarTempo(duracaoRef.current)}`;
+
+      if (seguirPlayhead && !arrastandoAgulhaRef.current) {
+        const scrollContainer = containerScrollRef.current;
+        if (scrollContainer) {
+          const margem = 120;
+          const dentroDaVista =
+            posicaoRealPx >= scrollContainer.scrollLeft + margem &&
+            posicaoRealPx <= scrollContainer.scrollLeft + scrollContainer.clientWidth - margem;
+
+          if (!dentroDaVista) {
+            // AVISAMOS QUE O SCROLL É AUTOMÁTICO
+            ignorarScroll.current = true;
+            scrollContainer.scrollTo({
+              left: Math.max(0, posicaoRealPx - scrollContainer.clientWidth / 2),
+              behavior: 'auto'
+            });
+            
+            // Retiramos o aviso rapidamente
+            if (timeoutScroll.current) clearTimeout(timeoutScroll.current);
+            timeoutScroll.current = setTimeout(() => {
+              ignorarScroll.current = false;
+            }, 100);
+          }
+        }
+      }
+
+      if (tocandoLocalRef.current && novoTempo < duracaoRef.current) {
+        animId = requestAnimationFrame(loopLocal);
+      }
+    };
+
+    animId = requestAnimationFrame(loopLocal);
+    return () => cancelAnimationFrame(animId);
+  }, [tocandoLocal, pxPorSegundo, seguirPlayhead]);
 
   useEffect(() => {
     if (!seguirPlayhead) return;
+    if (arrastandoAgulhaRef.current) return; 
     const container = containerScrollRef.current;
     if (!container) return;
 
     const margem = 120;
-    const alvo = posicaoPlayheadPx - container.clientWidth / 2;
     const dentroDaVista =
       posicaoPlayheadPx >= container.scrollLeft + margem &&
       posicaoPlayheadPx <= container.scrollLeft + container.clientWidth - margem;
 
     if (!dentroDaVista) {
-      container.scrollTo({ left: Math.max(0, alvo), behavior: 'smooth' });
+      // AVISAMOS QUE O SCROLL É AUTOMÁTICO
+      ignorarScroll.current = true;
+      container.scrollTo({ left: Math.max(0, posicaoPlayheadPx - container.clientWidth / 2), behavior: 'smooth' });
+      
+      if (timeoutScroll.current) clearTimeout(timeoutScroll.current);
+      timeoutScroll.current = setTimeout(() => {
+        ignorarScroll.current = false;
+      }, 600); // 600ms para dar tempo ao scroll "smooth"
     }
   }, [posicaoPlayheadPx, seguirPlayhead]);
 
   function aoRolarManualmente() {
+    // SE FOR O CÓDIGO A ROLAR A BARRA, IGNORAR (NÃO DESLIGAR O BOTÃO)
+    if (ignorarScroll.current) return; 
+    
+    if (arrastandoAgulhaRef.current) return; 
     setSeguirPlayhead(false);
   }
 
-  const tempoAPartirDoClique = useCallback(
-    (evento, elementoRef) => {
-      const rect = elementoRef.getBoundingClientRect();
-      const x = evento.clientX - rect.left + elementoRef.scrollLeft;
-      const tempo = (x / larguraTotal) * duracao;
+  const tempoAPartirDoEventoNaFaixa = useCallback(
+    (clientX) => {
+      const faixa = faixaRef.current;
+      if (!faixa) return 0;
+      const rect = faixa.getBoundingClientRect();
+      const x = clientX - rect.left;
+      const tempo = x / pxPorSegundo;
       return Math.max(0, Math.min(duracao, tempo));
     },
-    [larguraTotal, duracao]
+    [pxPorSegundo, duracao]
   );
 
-  function aoClicarNaFaixaDeTempo(evento) {
-    if (!aoBuscarTempo) return;
-    const container = containerScrollRef.current;
-    if (!container) return;
-    const tempo = tempoAPartirDoClique(evento, container);
-    aoBuscarTempo(tempo);
+  function aoIniciarArrasteAgulha(evento) {
+    if (resizeAtivoRef.current) return; 
+    evento.currentTarget.setPointerCapture(evento.pointerId);
+    pointerIdAgulhaRef.current = evento.pointerId;
+    arrastandoAgulhaRef.current = true;
+    setSeguirPlayhead(false);
+    const tempo = tempoAPartirDoEventoNaFaixa(evento.clientX);
+    aoBuscarTempo?.(tempo);
+  }
+
+  function aoMoverArrasteAgulha(evento) {
+    if (!arrastandoAgulhaRef.current) return;
+    if (pointerIdAgulhaRef.current !== evento.pointerId) return;
+    const tempo = tempoAPartirDoEventoNaFaixa(evento.clientX);
+    aoBuscarTempo?.(tempo);
+  }
+
+  function aoFinalizarArrasteAgulha(evento) {
+    if (pointerIdAgulhaRef.current === evento.pointerId) {
+      try {
+        evento.currentTarget.releasePointerCapture(evento.pointerId);
+      } catch { }
+    }
+    arrastandoAgulhaRef.current = false;
+    pointerIdAgulhaRef.current = null;
     setSeguirPlayhead(true);
   }
 
-  function aoIniciarArraste(evento) {
-    arrastandoRef.current = true;
-    aoClicarNaFaixaDeTempo(evento);
+  function iniciarResize(evento, palavra, lado) {
+    evento.stopPropagation();
+    evento.currentTarget.setPointerCapture(evento.pointerId);
+    resizeAtivoRef.current = {
+      palavraId: palavra.id,
+      lado,
+      pointerId: evento.pointerId,
+    };
   }
 
-  function aoMoverDuranteArraste(evento) {
-    if (!arrastandoRef.current) return;
-    aoClicarNaFaixaDeTempo(evento);
+  function moverResize(evento) {
+    const ativo = resizeAtivoRef.current;
+    if (!ativo || ativo.pointerId !== evento.pointerId) return;
+    if (!aoRedimensionarPalavra) return;
+
+    const tempo = tempoAPartirDoEventoNaFaixa(evento.clientX);
+    aoRedimensionarPalavra({
+      palavraId: ativo.palavraId,
+      lado: ativo.lado,
+      novoTempo: tempo,
+      duracaoMinima: DURACAO_MINIMA_PALAVRA,
+    });
   }
 
-  function aoFinalizarArraste() {
-    arrastandoRef.current = false;
+  function finalizarResize(evento) {
+    const ativo = resizeAtivoRef.current;
+    if (ativo && ativo.pointerId === evento.pointerId) {
+      try {
+        evento.currentTarget.releasePointerCapture(evento.pointerId);
+      } catch { }
+    }
+    resizeAtivoRef.current = null;
   }
 
   return (
@@ -208,14 +447,14 @@ export function TelaTimeline({
 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 16 }}>
           <button
-            onClick={aoAlternarPlayPause}
+            onClick={() => setTocandoLocal(!tocandoLocal)}
             style={{
               width: 36,
               height: 36,
               borderRadius: '50%',
-              border: `1px solid ${estaTocando ? COR_AMBAR : '#383b44'}`,
-              background: estaTocando ? COR_AMBAR : '#22242b',
-              color: estaTocando ? '#1a1400' : COR_TEXTO,
+              border: `1px solid ${tocandoLocal ? COR_AMBAR : '#383b44'}`,
+              background: tocandoLocal ? COR_AMBAR : '#22242b',
+              color: tocandoLocal ? '#1a1400' : COR_TEXTO,
               cursor: 'pointer',
               fontSize: 13,
               display: 'flex',
@@ -223,12 +462,15 @@ export function TelaTimeline({
               justifyContent: 'center',
               transition: 'all 120ms ease',
             }}
-            title={estaTocando ? 'Pausar' : 'Reproduzir'}
+            title={tocandoLocal ? 'Pausar (Espaço)' : 'Reproduzir (Espaço)'}
           >
-            {estaTocando ? '❚❚' : '▶'}
+            {tocandoLocal ? '❚❚' : '▶'}
           </button>
 
-          <span style={{ fontSize: 13, color: COR_TEXTO_SEC, fontVariantNumeric: 'tabular-nums', fontFamily: 'var(--font-mono, monospace)' }}>
+          <span 
+            id="contador-tempo"
+            style={{ fontSize: 13, color: COR_TEXTO_SEC, fontVariantNumeric: 'tabular-nums', fontFamily: 'var(--font-mono, monospace)' }}
+          >
             {formatarTempo(tempoAtualSegundos)} / {formatarTempo(duracao)}
           </span>
 
@@ -252,6 +494,7 @@ export function TelaTimeline({
               value={zoom}
               onChange={(e) => setZoom(Number(e.target.value))}
               style={{ width: 140 }}
+              title="Atalhos: + / -"
             />
             <span style={{ fontSize: 12, color: COR_TEXTO_TERC, width: 34, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
               {zoom.toFixed(2)}x
@@ -262,14 +505,13 @@ export function TelaTimeline({
 
       {carregando && (
         <div style={{ padding: '6px 20px', fontSize: 12, color: COR_AZUL, background: 'rgba(91,141,239,0.08)' }}>
-          Decodificando áudio real para a waveform…
+          Renderizando engine de áudio profissional...
         </div>
       )}
 
-      {!carregando && !temWaveformReal && (
+      {!carregando && erro && (
         <div style={{ padding: '6px 20px', fontSize: 12, color: COR_AMBAR, background: 'rgba(239,159,39,0.08)' }}>
-          Não foi possível decodificar o áudio real deste arquivo — mostrando um
-          placeholder. {erro ? `Detalhe: ${erro.message}` : 'Verifique se o arquivo tem trilha de áudio.'}
+          Não foi possível carregar a engine de áudio. Mostrando timeline de visualização genérica. {erro.message}
         </div>
       )}
 
@@ -283,7 +525,10 @@ export function TelaTimeline({
         }}
       >
         <div
-          ref={registrarSlotDoPlayer}
+          ref={(node) => {
+            containerPlayerRef.current = node; 
+            if (registrarSlotDoPlayer) registrarSlotDoPlayer(node);
+          }}
           style={{
             width: '100%',
             maxWidth: 720,
@@ -338,11 +583,12 @@ export function TelaTimeline({
           </div>
 
           <div
-            style={{ position: 'relative', width: larguraTotal, cursor: 'pointer', userSelect: 'none' }}
-            onMouseDown={aoIniciarArraste}
-            onMouseMove={aoMoverDuranteArraste}
-            onMouseUp={aoFinalizarArraste}
-            onMouseLeave={aoFinalizarArraste}
+            ref={faixaRef}
+            style={{ position: 'relative', width: larguraTotal, cursor: 'pointer', userSelect: 'none', touchAction: 'none' }}
+            onPointerDown={aoIniciarArrasteAgulha}
+            onPointerMove={aoMoverArrasteAgulha}
+            onPointerUp={aoFinalizarArrasteAgulha}
+            onPointerCancel={aoFinalizarArrasteAgulha}
           >
             <div style={{ position: 'relative', height: ALTURA_REGUA, borderBottom: `1px solid ${COR_HAIRLINE}`, background: '#1a1b20' }}>
               {marcadores.map((tempo) => (
@@ -369,29 +615,47 @@ export function TelaTimeline({
             </div>
 
             <div style={{ position: 'relative', height: ALTURA_ONDA, borderBottom: `1px solid ${COR_HAIRLINE}`, background: '#131418' }}>
-              <svg width={larguraTotal} height={ALTURA_ONDA} style={{ display: 'block' }}>
-                <line x1="0" y1={ALTURA_ONDA / 2} x2={larguraTotal} y2={ALTURA_ONDA / 2} stroke={COR_HAIRLINE} />
-                {picosParaDesenhar.map(([min, max], indice) => {
-                  const x = (indice / picosParaDesenhar.length) * larguraTotal;
-                  const largura = Math.max(1, larguraTotal / picosParaDesenhar.length);
-                  const yTopo = ALTURA_ONDA / 2 - max * (ALTURA_ONDA / 2 - 4);
-                  const yBase = ALTURA_ONDA / 2 - min * (ALTURA_ONDA / 2 - 4);
-                  return (
-                    <rect
-                      key={indice}
-                      x={x}
-                      y={yTopo}
-                      width={largura}
-                      height={Math.max(1, yBase - yTopo)}
-                      fill={temWaveformReal ? COR_WAVE : '#454851'}
-                      opacity={temWaveformReal ? 0.92 : 0.6}
-                    />
-                  );
-                })}
-              </svg>
+              
+              <div
+                ref={wavesurferContainerRef}
+                style={{
+                  position: 'absolute',
+                  top: 0, 
+                  left: 0, 
+                  right: 0, 
+                  bottom: 0,
+                  opacity: temWaveformReal ? 1 : 0,
+                  pointerEvents: 'none' 
+                }}
+              />
+
+              {!temWaveformReal && !carregando && (
+                <svg width={larguraTotal} height={ALTURA_ONDA} style={{ display: 'block', position: 'absolute', top: 0, left: 0 }}>
+                  <line x1="0" y1={ALTURA_ONDA / 2} x2={larguraTotal} y2={ALTURA_ONDA / 2} stroke={COR_HAIRLINE} />
+                  {picosFallback.map(([min, max], indice) => {
+                    const x = (indice / picosFallback.length) * larguraTotal;
+                    const largura = Math.max(1, larguraTotal / picosFallback.length);
+                    const yTopo = ALTURA_ONDA / 2 - max * (ALTURA_ONDA / 2 - 4);
+                    const yBase = ALTURA_ONDA / 2 - min * (ALTURA_ONDA / 2 - 4);
+                    return (
+                      <rect
+                        key={indice}
+                        x={x}
+                        y={yTopo}
+                        width={largura}
+                        height={Math.max(1, yBase - yTopo)}
+                        fill="#454851"
+                        opacity={0.6}
+                      />
+                    );
+                  })}
+                </svg>
+              )}
             </div>
 
-            <div style={{ position: 'relative', height: ALTURA_TRILHA_LEGENDA, background: '#16171b' }}>
+            <div
+              style={{ position: 'relative', height: ALTURA_TRILHA_LEGENDA, background: '#16171b' }}
+            >
               {palavras.map((palavra) => {
                 const inicio = Math.max(0, limitarNumero(palavra.inicio));
                 const fim = Math.max(inicio + 0.04, limitarNumero(palavra.fim, inicio + 0.04));
@@ -401,40 +665,94 @@ export function TelaTimeline({
                 const emGrupo = idsSelecionados?.includes(palavra.id);
 
                 return (
-                  <button
+                  <div
                     key={palavra.id}
+                    title={`${palavra.texto} — ${inicio.toFixed(2)}s a ${fim.toFixed(2)}s`}
                     onClick={(evento) => {
                       evento.stopPropagation();
                       aoSelecionarPalavra?.(palavra.id, evento.shiftKey);
                     }}
-                    title={`${palavra.texto} — ${inicio.toFixed(2)}s a ${fim.toFixed(2)}s`}
                     style={{
                       position: 'absolute',
                       left: esquerda,
                       top: 10,
                       width: largura,
-                      height: 36,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
+                      height: 38,
                       borderRadius: 6,
                       border: selecionada ? `2px solid ${COR_AMBAR}` : emGrupo ? `2px solid ${COR_AZUL}` : `1px solid ${COR_HAIRLINE}`,
-                      background: palavra.estilo ? 'rgba(239,159,39,0.16)' : '#1e2028',
-                      color: COR_TEXTO,
+                      background: palavra.estilo ? 'rgba(239,159,39,0.16)' : '#c9bfa1',
+                      color: palavra.estilo ? COR_TEXTO : '#242017',
                       fontSize: 12,
-                      padding: '0 8px',
-                      cursor: 'pointer',
+                      fontWeight: 600,
                       boxSizing: 'border-box',
                       transition: 'border-color 100ms ease',
+                      display: 'flex',
+                      alignItems: 'center',
+                      cursor: 'pointer',
+                      overflow: 'hidden',
                     }}
                   >
-                    {palavra.texto}
-                  </button>
+                    <div
+                      onPointerDown={(e) => iniciarResize(e, palavra, 'esquerda')}
+                      onPointerMove={moverResize}
+                      onPointerUp={finalizarResize}
+                      onPointerCancel={finalizarResize}
+                      style={{
+                        position: 'absolute',
+                        left: 0,
+                        top: 0,
+                        bottom: 0,
+                        width: LARGURA_ALCA_PX,
+                        cursor: 'ew-resize',
+                        touchAction: 'none',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <div style={{ width: 3, height: 16, borderRadius: 2, background: 'rgba(255,255,255,0.65)' }} />
+                    </div>
+
+                    <span
+                      style={{
+                        flex: 1,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        padding: `0 ${LARGURA_ALCA_PX + 4}px`,
+                        pointerEvents: 'none',
+                      }}
+                    >
+                      {palavra.texto}
+                    </span>
+
+                    <div
+                      onPointerDown={(e) => iniciarResize(e, palavra, 'direita')}
+                      onPointerMove={moverResize}
+                      onPointerUp={finalizarResize}
+                      onPointerCancel={finalizarResize}
+                      style={{
+                        position: 'absolute',
+                        right: 0,
+                        top: 0,
+                        bottom: 0,
+                        width: LARGURA_ALCA_PX,
+                        cursor: 'ew-resize',
+                        touchAction: 'none',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <div style={{ width: 3, height: 16, borderRadius: 2, background: 'rgba(255,255,255,0.65)' }} />
+                    </div>
+                  </div>
                 );
               })}
             </div>
 
             <div
+              id="agulha-playhead"
               style={{
                 position: 'absolute',
                 left: posicaoPlayheadPx,
