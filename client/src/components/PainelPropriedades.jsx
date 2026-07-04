@@ -1,5 +1,5 @@
 // client/src/components/PainelPropriedades.jsx
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 
 const OPCOES_MODO_REVELACAO = [
   { valor: 'palavra', rotulo: 'Palavra inteira' },
@@ -34,6 +34,16 @@ async function registrarFonteNoServidor({ arquivo, familia, peso, italico }) {
     return null;
   }
 }
+
+// Usado quando o escaneamento de fontes do sistema falha ou não
+// encontra nenhuma família (ex: fora do Electron, ou erro de leitura de
+// disco) — garante que o seletor de fonte sempre tenha ao menos uma
+// opção válida em vez de ficar vazio ou referenciar uma variável
+// inexistente.
+const FONTE_FALLBACK = {
+  familia: 'sans-serif',
+  estilos: [{ peso: 400, italico: false, nomeEstilo: 'Regular', arquivo: null }],
+};
 
 export function PainelPropriedades({ estilo = {}, aoMudar, titulo, aoLimparOverride }) {
   const [familiasDisponiveis, setFamiliasDisponiveis] = useState([]);
@@ -88,74 +98,57 @@ export function PainelPropriedades({ estilo = {}, aoMudar, titulo, aoLimparOverr
     aplicarEstiloDeFonte(novaFamilia, estiloEscolhido);
   }
 
-  // VALORES PADRÕES RIGOROSOS DO DESIGN SYSTEM V1.0
-  const pesoFonte = estilo.pesoFonte ?? 400;                     // Regular base da Roboto Flex
-  const italico = estilo.italico ?? false;                       // Sem itálico por padrão
-  const posicaoX = estilo.posicaoX ?? 0.50;                      // Centro horizontal absoluto
-  const posicaoY = estilo.posicaoY ?? 0.80;                      // 80% (Topo da Safe Zone de 20%)
-  const corBase = estilo.corBase ?? '#FFFFFF';                   // Padrão Read-Ahead: Branco Puro
-  const opacidadeAntesDoDestaque = estilo.opacidadeAntesDoDestaque ?? 0.90; // Read-Ahead: 90%
-  const corDestaque = estilo.corDestaque ?? '#FFCC00';           // Main Character (Amarelo)
-  const duracaoTransicaoMs = estilo.duracaoTransicaoMs ?? 120;   // Resposta do Pop
-  const tamanhoBase = estilo.tamanhoBase ?? 42;
   const modoRevelacaoAtual = estilo.modoRevelacao || 'silaba';
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <h3 style={{ margin: 0, fontSize: 16, fontWeight: 500 }}>{titulo}</h3>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <h3 className="panel-title panel-title--accent" style={{ fontSize: 14 }}>{titulo}</h3>
 
-      <div>
-        <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-          Efeito de revelação
-        </label>
-        <select
-          value={modoRevelacaoAtual}
-          onChange={(e) => atualizar('modoRevelacao', e.target.value)}
-          style={{ width: '100%' }}
-        >
-          {OPCOES_MODO_REVELACAO.map((opcao) => (
-            <option key={opcao.valor} value={opcao.valor}>
-              {opcao.rotulo}
-            </option>
-          ))}
-        </select>
+      <div className="panel" style={{ gap: 14 }}>
+        <div className="field">
+          <label className="field-label">Efeito de revelação</label>
+          <select
+            className="select"
+            value={modoRevelacaoAtual}
+            onChange={(e) => atualizar('modoRevelacao', e.target.value)}
+          >
+            {OPCOES_MODO_REVELACAO.map((opcao) => (
+              <option key={opcao.valor} value={opcao.valor}>{opcao.rotulo}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="field">
+          <label className="field-label">
+            Fonte
+            {carregandoFontes && <span className="field-label__value"> · carregando…</span>}
+            {registrandoFonte && <span className="field-label__value"> · sincronizando…</span>}
+          </label>
+          <select
+            className="select"
+            value={estilo.fonte}
+            onChange={(e) => aoTrocarFonte(e.target.value)}
+            disabled={carregandoFontes}
+            style={{ fontFamily: estilo.fonte }}
+          >
+            {familiasDisponiveis.map((f) => (
+              <option key={f.familia} value={f.familia} style={{ fontFamily: f.familia }}>{f.familia}</option>
+            ))}
+          </select>
+          {erroFontes && <p className="status-line status-line--error" style={{ margin: 0 }}>{erroFontes}</p>}
+        </div>
       </div>
 
-      <div>
-        <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-          Fonte {carregandoFontes && '(carregando fontes...)'} {registrandoFonte && '(sincronizando...)'}
-        </label>
+      <div className="panel" style={{ gap: 12 }}>
+        <label className="panel-title" style={{ fontSize: 11.5 }}>Espessura e estilo</label>
         <select
-          value={estilo.fonte}
-          onChange={(e) => aoTrocarFonte(e.target.value)}
-          disabled={carregandoFontes}
-          style={{ width: '100%', fontFamily: estilo.fonte }}
-        >
-          {familiasDisponiveis.map((f) => (
-            <option key={f.familia} value={f.familia} style={{ fontFamily: f.familia }}>{f.familia}</option>
-          ))}
-        </select>
-      </div>
-
-{/* CONTROLE FORÇADO DE ESPESSURA E ESTILO (INCLUI VARIÁVEIS) */}
-      <div style={{ border: '1px solid #ddd', padding: '12px', borderRadius: '8px', backgroundColor: '#fafafa', display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <label style={{ display: 'block', fontSize: 13, fontWeight: 'bold', color: '#555', margin: 0 }}>
-          ESPESSURA E ESTILO DA FONTE
-        </label>
-        
-        <select
+          className="select"
           value={`${estilo.pesoFonte ?? 400}_${estilo.italico || false}`}
           onChange={(e) => {
             const [peso, italicoStr] = e.target.value.split('_');
-            // Atualiza os dois valores (peso e itálico) simultaneamente na base de dados/estado
-            aoMudar({ 
-              pesoFonte: Number(peso), 
-              italico: italicoStr === 'true' 
-            });
+            aoMudar({ pesoFonte: Number(peso), italico: italicoStr === 'true' });
           }}
-          style={{ width: '100%', padding: '6px', borderRadius: '4px', border: '1px solid #ccc', cursor: 'pointer' }}
         >
-          {/* Opções Regulares */}
           <option value="100_false">Thin (100)</option>
           <option value="200_false">Extra Light (200)</option>
           <option value="300_false">Light (300)</option>
@@ -165,159 +158,139 @@ export function PainelPropriedades({ estilo = {}, aoMudar, titulo, aoLimparOverr
           <option value="700_false">Bold (700)</option>
           <option value="800_false">Extra Bold (800)</option>
           <option value="900_false">Black (900)</option>
-
           <option value="100_true">Thin Italic (100)</option>
           <option value="200_true">Extra Light Italic (200)</option>
           <option value="300_true">Light Italic (300)</option>
           <option value="400_true">Regular Italic (400)</option>
-          <option value="500_true">Medium Italic (500)</option>     
+          <option value="500_true">Medium Italic (500)</option>
           <option value="600_true">Semi Bold Italic (600)</option>
           <option value="700_true">Bold Italic (700)</option>
           <option value="800_true">Extra Bold Italic (800)</option>
           <option value="900_true">Black Italic (900)</option>
         </select>
-      </div>
 
-      <div style={{ marginTop: 4, marginBottom: 4, padding: '10px', border: '1px solid #10a37f', borderRadius: '6px', backgroundColor: '#f2fcf8' }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#10a37f', fontWeight: 'bold' }}>
+        <label className="checkbox-row" style={{ marginTop: 4 }}>
           <input
-            type="checkbox" 
-            checked={estilo.estiloSoNoDestaque ?? false} 
+            type="checkbox"
+            checked={estilo.estiloSoNoDestaque ?? false}
             onChange={(e) => atualizar('estiloSoNoDestaque', e.target.checked)}
           />
-          Alterar estilo APENAS no destaque
+          Alterar estilo apenas no destaque
         </label>
       </div>
 
-      <div>
-        <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-          Tamanho base: {estilo.tamanhoBase}px
+      <div className="field">
+        <label className="field-label">
+          Tamanho base <span className="field-label__value">{estilo.tamanhoBase}px</span>
         </label>
-        <input type="range" min="16" max="120" step="1" value={estilo.tamanhoBase} onChange={(e) => atualizar('tamanhoBase', Number(e.target.value))} style={{ width: '100%' }} />
+        <input type="range" min="16" max="120" step="1" value={estilo.tamanhoBase} onChange={(e) => atualizar('tamanhoBase', Number(e.target.value))} />
       </div>
 
-{/* NOVO: POSIÇÃO DA LEGENDA NO ECRÃ */}
-      <div style={{ border: '1px solid #ddd', padding: '12px', borderRadius: '8px', backgroundColor: '#fafafa', display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div className="panel" style={{ gap: 14 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <label style={{ display: 'block', fontSize: 12, fontWeight: 'bold', color: '#555', margin: 0 }}>
-            POSIÇÃO DA LEGENDA
-          </label>
-          <button 
-            onClick={(e) => {
-              e.preventDefault();
-              atualizar('posicaoX', 0.5); 
-            }}
-            style={{ fontSize: 11, padding: '4px 10px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #bbb', backgroundColor: '#fff', color: '#333' }}
+          <label className="panel-title" style={{ fontSize: 11.5 }}>Posição da legenda</label>
+          <button
+            className="btn btn--ghost"
+            style={{ padding: '4px 10px', fontSize: 11.5 }}
+            onClick={(e) => { e.preventDefault(); atualizar('posicaoX', 0.5); }}
           >
-            Posicionar ao Centro
+            Centralizar
           </button>
         </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <div style={{ flex: 1 }}>
-            <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>Horizontal (X)</label>
-            <input 
-              type="range" min="0" max="1" step="0.01" 
-              value={estilo.posicaoX ?? 0.5} 
-              onChange={(e) => atualizar('posicaoX', Number(e.target.value))} 
-              style={{ width: '100%' }} 
-            />
+        <div style={{ display: 'flex', gap: 14 }}>
+          <div className="field" style={{ flex: 1 }}>
+            <label className="field-label">Horizontal</label>
+            <input type="range" min="0" max="1" step="0.01" value={estilo.posicaoX ?? 0.5} onChange={(e) => atualizar('posicaoX', Number(e.target.value))} />
           </div>
-          <div style={{ flex: 1 }}>
-            <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>Vertical (Y)</label>
-            <input 
-              type="range" min="0" max="1" step="0.01" 
-              value={estilo.posicaoY ?? 0.85} 
-              onChange={(e) => atualizar('posicaoY', Number(e.target.value))} 
-              style={{ width: '100%' }} 
-            />
+          <div className="field" style={{ flex: 1 }}>
+            <label className="field-label">Vertical</label>
+            <input type="range" min="0" max="1" step="0.01" value={estilo.posicaoY ?? 0.85} onChange={(e) => atualizar('posicaoY', Number(e.target.value))} />
           </div>
         </div>
       </div>
 
-      {/* BLOCO DO FUNDO DA LEGENDA */}
-      <div style={{ border: '1px solid #ddd', padding: '12px', borderRadius: '8px', backgroundColor: '#fafafa', display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 'bold', color: '#555', cursor: 'pointer' }}>
+      <div className="panel" style={{ gap: 14 }}>
+        <label className="checkbox-row" style={{ fontWeight: 600, textTransform: 'uppercase', fontSize: 11.5, letterSpacing: '0.04em', color: 'var(--text-secondary)' }}>
           <input
             type="checkbox"
             checked={estilo.comFundo ?? false}
             onChange={(e) => atualizar('comFundo', e.target.checked)}
           />
-          ATIVAR FUNDO DA LEGENDA (BOX)
+          Ativar fundo da legenda
         </label>
-        
+
         {estilo.comFundo && (
           <>
-            <div>
-              <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>Cor do fundo</label>
-              <input type="color" value={estilo.corFundo ?? '#000000'} onChange={(e) => atualizar('corFundo', e.target.value)} style={{ width: '100%', height: 32, padding: 0, border: 'none', borderRadius: '4px', cursor: 'pointer' }} />
+            <div className="field">
+              <label className="field-label">Cor do fundo</label>
+              <input type="color" value={estilo.corFundo ?? '#000000'} onChange={(e) => atualizar('corFundo', e.target.value)} />
             </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-                Opacidade do fundo: {Math.round((estilo.opacidadeFundo ?? 0.6) * 100)}%
+            <div className="field">
+              <label className="field-label">
+                Opacidade <span className="field-label__value">{Math.round((estilo.opacidadeFundo ?? 0.6) * 100)}%</span>
               </label>
-              <input type="range" min="0" max="1" step="0.05" value={estilo.opacidadeFundo ?? 0.6} onChange={(e) => atualizar('opacidadeFundo', Number(e.target.value))} style={{ width: '100%' }} />
+              <input type="range" min="0" max="1" step="0.05" value={estilo.opacidadeFundo ?? 0.6} onChange={(e) => atualizar('opacidadeFundo', Number(e.target.value))} />
             </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-                Espaçamento (Padding): {estilo.paddingFundo ?? 10}px
+            <div className="field">
+              <label className="field-label">
+                Espaçamento <span className="field-label__value">{estilo.paddingFundo ?? 10}px</span>
               </label>
-              <input type="range" min="0" max="40" step="1" value={estilo.paddingFundo ?? 10} onChange={(e) => atualizar('paddingFundo', Number(e.target.value))} style={{ width: '100%' }} />
+              <input type="range" min="0" max="40" step="1" value={estilo.paddingFundo ?? 10} onChange={(e) => atualizar('paddingFundo', Number(e.target.value))} />
             </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-                Arredondamento: {estilo.borderRadiusFundo ?? 6}px
+            <div className="field">
+              <label className="field-label">
+                Arredondamento <span className="field-label__value">{estilo.borderRadiusFundo ?? 6}px</span>
               </label>
-              <input type="range" min="0" max="30" step="1" value={estilo.borderRadiusFundo ?? 6} onChange={(e) => atualizar('borderRadiusFundo', Number(e.target.value))} style={{ width: '100%' }} />
+              <input type="range" min="0" max="30" step="1" value={estilo.borderRadiusFundo ?? 6} onChange={(e) => atualizar('borderRadiusFundo', Number(e.target.value))} />
             </div>
           </>
         )}
       </div>
 
-      {/* BLOCO DE PULO */}
-      <div style={{ border: '1px solid #ddd', padding: '12px', borderRadius: '8px', backgroundColor: '#fafafa', display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <label style={{ display: 'block', fontSize: 12, fontWeight: 'bold', color: '#555' }}>
-          EFEITO DE PULO (HIGHLIGHT)
-        </label>
-        <div>
-          <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-            Escala do pulo: {Math.round(((estilo.escalaPulo ?? estilo.escalaDestaque ?? 1.3) - 1) * 100)}%
+      <div className="panel" style={{ gap: 14 }}>
+        <label className="panel-title" style={{ fontSize: 11.5 }}>Efeito de pulo (highlight)</label>
+        <div className="field">
+          <label className="field-label">
+            Escala do pulo <span className="field-label__value">{Math.round(((estilo.escalaPulo ?? estilo.escalaDestaque ?? 1.3) - 1) * 100)}%</span>
           </label>
-          <input type="range" min="1" max="2" step="0.05" value={estilo.escalaPulo ?? estilo.escalaDestaque ?? 1.3} onChange={(e) => { atualizar('escalaPulo', Number(e.target.value)); atualizar('escalaDestaque', Number(e.target.value)); }} style={{ width: '100%' }} />
+          <input type="range" min="1" max="2" step="0.05" value={estilo.escalaPulo ?? estilo.escalaDestaque ?? 1.3} onChange={(e) => { atualizar('escalaPulo', Number(e.target.value)); atualizar('escalaDestaque', Number(e.target.value)); }} />
         </div>
-        <div>
-          <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-            Elevação do pulo: {Math.round((estilo.elevacaoPulo ?? 0.25) * 100)}% da altura
+        <div className="field">
+          <label className="field-label">
+            Elevação do pulo <span className="field-label__value">{Math.round((estilo.elevacaoPulo ?? 0.25) * 100)}%</span>
           </label>
-          <input type="range" min="0" max="1" step="0.05" value={estilo.elevacaoPulo ?? 0.25} onChange={(e) => atualizar('elevacaoPulo', Number(e.target.value))} style={{ width: '100%' }} />
+          <input type="range" min="0" max="1" step="0.05" value={estilo.elevacaoPulo ?? 0.25} onChange={(e) => atualizar('elevacaoPulo', Number(e.target.value))} />
         </div>
-        <div>
-          <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-            Opacidade fora do destaque: {Math.round((estilo.opacidadeAntesDoDestaque ?? 0.8) * 100)}%
+        <div className="field">
+          <label className="field-label">
+            Opacidade fora do destaque <span className="field-label__value">{Math.round((estilo.opacidadeAntesDoDestaque ?? 0.8) * 100)}%</span>
           </label>
-          <input type="range" min="0.1" max="1" step="0.05" value={estilo.opacidadeAntesDoDestaque ?? 0.8} onChange={(e) => atualizar('opacidadeAntesDoDestaque', Number(e.target.value))} style={{ width: '100%' }} />
+          <input type="range" min="0.1" max="1" step="0.05" value={estilo.opacidadeAntesDoDestaque ?? 0.8} onChange={(e) => atualizar('opacidadeAntesDoDestaque', Number(e.target.value))} />
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 10 }}>
-        <div style={{ flex: 1 }}>
-          <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>Cor base</label>
-          <input type="color" value={estilo.corBase} onChange={(e) => atualizar('corBase', e.target.value)} style={{ width: '100%', height: 32 }} />
+      <div style={{ display: 'flex', gap: 14 }}>
+        <div className="field" style={{ flex: 1 }}>
+          <label className="field-label">Cor base</label>
+          <input type="color" value={estilo.corBase} onChange={(e) => atualizar('corBase', e.target.value)} />
         </div>
-        <div style={{ flex: 1 }}>
-          <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>Cor destaque</label>
-          <input type="color" value={estilo.corDestaque} onChange={(e) => atualizar('corDestaque', e.target.value)} style={{ width: '100%', height: 32 }} />
+        <div className="field" style={{ flex: 1 }}>
+          <label className="field-label">Cor destaque</label>
+          <input type="color" value={estilo.corDestaque} onChange={(e) => atualizar('corDestaque', e.target.value)} />
         </div>
       </div>
 
-      <div>
-        <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 4 }}>
-          Velocidade da transição: {estilo.duracaoTransicaoMs}ms
+      <div className="field">
+        <label className="field-label">
+          Velocidade da transição <span className="field-label__value">{estilo.duracaoTransicaoMs}ms</span>
         </label>
-        <input type="range" min="20" max="400" step="10" value={estilo.duracaoTransicaoMs} onChange={(e) => atualizar('duracaoTransicaoMs', Number(e.target.value))} style={{ width: '100%' }} />
+        <input type="range" min="20" max="400" step="10" value={estilo.duracaoTransicaoMs} onChange={(e) => atualizar('duracaoTransicaoMs', Number(e.target.value))} />
       </div>
 
       {aoLimparOverride && (
-        <button onClick={aoLimparOverride}>Restaurar para o padrão</button>
+        <button className="btn btn--ghost btn--block" onClick={aoLimparOverride}>
+          Restaurar para o padrão
+        </button>
       )}
     </div>
   );

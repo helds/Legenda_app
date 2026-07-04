@@ -1,24 +1,4 @@
 // client/src/components/TelaTimeline.jsx
-//
-// Página dedicada da Timeline — antes isso vivia espremido dentro do
-// editor (TimelineCamadas.jsx), com uma onda sonora totalmente sintética
-// (gerada por Math.sin, sem nenhuma relação com o áudio real). Esta tela
-// substitui aquilo por:
-//
-//   1. Uma waveform desenhada a partir do áudio REAL do vídeo/arquivo do
-//      projeto (via hook useWaveformPeaks, que decodifica com a Web
-//      Audio API).
-//   2. Zoom (a régua de tempo e as trilhas escalam juntas).
-//   3. Scroll automático para acompanhar o playhead durante a reprodução
-//      do player (recebido via prop, controlado pelo App).
-//   4. Clique em qualquer ponto da timeline reposiciona o player
-//      (seek), tanto na régua quanto nas trilhas.
-//
-// Este componente não sabe nada sobre a existência do Player do Remotion
-// além da pequena interface que o App.jsx repassa: tempoAtualSegundos
-// (número, atualizado a cada frame) e aoBuscarTempo(segundos) (callback
-// de seek). Isso mantém a tela desacoplada e reaproveitável.
-
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useWaveformPeaks, reamostrarPicos } from '../hooks/useWaveformPeaks';
 
@@ -29,6 +9,17 @@ const ALTURA_ONDA = 96;
 const ALTURA_REGUA = 34;
 const ALTURA_TRILHA_LEGENDA = 58;
 const LARGURA_ROTULO = 76;
+
+const COR_FUNDO = '#101114';
+const COR_PAINEL = '#1c1e23';
+const COR_CONTAINER = '#17181c';
+const COR_HAIRLINE = '#2b2d34';
+const COR_TEXTO = '#edece7';
+const COR_TEXTO_SEC = '#9a9ca4';
+const COR_TEXTO_TERC = '#6b6d76';
+const COR_AMBAR = '#ef9f27';
+const COR_AZUL = '#5b8def';
+const COR_WAVE = '#3d9b8a';
 
 function limitarNumero(valor, fallback = 0) {
   return Number.isFinite(valor) ? valor : fallback;
@@ -44,8 +35,6 @@ function formatarTempo(segundos) {
 
 function criarMarcadoresTempo(duracaoSegundos, pxPorSegundo) {
   const duracao = Math.max(1, Math.ceil(duracaoSegundos));
-  // Escolhe o passo dos marcadores dependendo do zoom, pra nunca ficar
-  // nem lotado de números nem vazio demais.
   const candidatos = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300];
   const pxMinimoEntreMarcadores = 70;
   const passo =
@@ -101,9 +90,6 @@ export function TelaTimeline({
     [duracao, pxPorSegundo]
   );
 
-  // Reamostra os picos reais para o número de colunas que cabem na
-  // largura atual — refeito sempre que o zoom muda, sem re-decodificar
-  // o áudio (o hook já guardou os picos originais em alta resolução).
   const colunasVisiveis = Math.max(100, Math.min(3000, Math.floor(larguraTotal / 2)));
   const picosReamostrados = useMemo(
     () => reamostrarPicos(picos, colunasVisiveis),
@@ -112,9 +98,6 @@ export function TelaTimeline({
 
   const temWaveformReal = !!picos && !erro;
 
-  // Fallback: se a decodificação real falhar (ex: arquivo sem trilha de
-  // áudio, ou navegador sem suporte), ainda mostramos alguma coisa em
-  // vez de uma trilha vazia — deixando claro que é um placeholder.
   const picosFallback = useMemo(() => {
     if (temWaveformReal || carregando) return [];
     return Array.from({ length: colunasVisiveis }, (_, i) => {
@@ -126,7 +109,6 @@ export function TelaTimeline({
 
   const picosParaDesenhar = temWaveformReal ? picosReamostrados : picosFallback;
 
-  // --- Sincronização de scroll com o playhead ---
   const posicaoPlayheadPx = (tempoAtualSegundos / duracao) * larguraTotal;
 
   useEffect(() => {
@@ -145,9 +127,6 @@ export function TelaTimeline({
     }
   }, [posicaoPlayheadPx, seguirPlayhead]);
 
-  // Se o usuário rolar manualmente, para de perseguir o playhead até que
-  // ele clique em "seguir" de novo — evita a timeline "brigar" com o
-  // usuário tentando olhar outra parte da edição enquanto o vídeo toca.
   function aoRolarManualmente() {
     setSeguirPlayhead(false);
   }
@@ -191,9 +170,9 @@ export function TelaTimeline({
         display: 'flex',
         flexDirection: 'column',
         height: '100vh',
-        background: '#101010',
-        color: '#eaeaea',
-        fontFamily: 'system-ui, sans-serif',
+        background: COR_FUNDO,
+        color: COR_TEXTO,
+        fontFamily: "'Inter', system-ui, sans-serif",
       }}
     >
       <header
@@ -202,63 +181,69 @@ export function TelaTimeline({
           alignItems: 'center',
           gap: 16,
           padding: '12px 20px',
-          borderBottom: '1px solid #262626',
-          background: '#151515',
+          borderBottom: `1px solid ${COR_HAIRLINE}`,
+          background: COR_PAINEL,
         }}
       >
         <button
           onClick={aoVoltarParaEditor}
-          style={{
-            padding: '8px 14px',
-            borderRadius: 6,
-            border: '1px solid #3a3a3a',
-            background: '#1c1c1c',
-            color: '#eaeaea',
-            cursor: 'pointer',
-            fontSize: 13,
-          }}
+          className="btn"
+          style={{ whiteSpace: 'nowrap' }}
         >
           ← Voltar ao editor
         </button>
 
-        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 500 }}>Timeline</h2>
+        <h2
+          style={{
+            margin: 0,
+            fontSize: 15,
+            fontWeight: 700,
+            letterSpacing: '0.06em',
+            textTransform: 'uppercase',
+            color: COR_TEXTO_SEC,
+          }}
+        >
+          Timeline
+        </h2>
 
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 14 }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 16 }}>
           <button
             onClick={aoAlternarPlayPause}
             style={{
               width: 36,
               height: 36,
               borderRadius: '50%',
-              border: '1px solid #3a3a3a',
-              background: estaTocando ? '#EF9F27' : '#1c1c1c',
-              color: estaTocando ? '#111' : '#eaeaea',
+              border: `1px solid ${estaTocando ? COR_AMBAR : '#383b44'}`,
+              background: estaTocando ? COR_AMBAR : '#22242b',
+              color: estaTocando ? '#1a1400' : COR_TEXTO,
               cursor: 'pointer',
-              fontSize: 14,
+              fontSize: 13,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
+              transition: 'all 120ms ease',
             }}
             title={estaTocando ? 'Pausar' : 'Reproduzir'}
           >
             {estaTocando ? '❚❚' : '▶'}
           </button>
 
-          <span style={{ fontSize: 13, color: '#999', fontVariantNumeric: 'tabular-nums' }}>
+          <span style={{ fontSize: 13, color: COR_TEXTO_SEC, fontVariantNumeric: 'tabular-nums', fontFamily: 'var(--font-mono, monospace)' }}>
             {formatarTempo(tempoAtualSegundos)} / {formatarTempo(duracao)}
           </span>
 
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#999' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: COR_TEXTO_TERC, cursor: 'pointer' }}>
             <input
               type="checkbox"
               checked={seguirPlayhead}
               onChange={(e) => setSeguirPlayhead(e.target.checked)}
+              style={{ accentColor: COR_AMBAR }}
             />
             Seguir reprodução
           </label>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 12, color: '#999' }}>Zoom</span>
+            <span style={{ fontSize: 12, color: COR_TEXTO_TERC }}>Zoom</span>
             <input
               type="range"
               min={ZOOM_MIN}
@@ -268,7 +253,7 @@ export function TelaTimeline({
               onChange={(e) => setZoom(Number(e.target.value))}
               style={{ width: 140 }}
             />
-            <span style={{ fontSize: 12, color: '#999', width: 34, textAlign: 'right' }}>
+            <span style={{ fontSize: 12, color: COR_TEXTO_TERC, width: 34, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
               {zoom.toFixed(2)}x
             </span>
           </div>
@@ -276,13 +261,13 @@ export function TelaTimeline({
       </header>
 
       {carregando && (
-        <div style={{ padding: '6px 20px', fontSize: 12, color: '#8ab4f8', background: '#12203a' }}>
-          Decodificando áudio real para a waveform...
+        <div style={{ padding: '6px 20px', fontSize: 12, color: COR_AZUL, background: 'rgba(91,141,239,0.08)' }}>
+          Decodificando áudio real para a waveform…
         </div>
       )}
 
       {!carregando && !temWaveformReal && (
-        <div style={{ padding: '6px 20px', fontSize: 12, color: '#e0b34d', background: '#2a2210' }}>
+        <div style={{ padding: '6px 20px', fontSize: 12, color: COR_AMBAR, background: 'rgba(239,159,39,0.08)' }}>
           Não foi possível decodificar o áudio real deste arquivo — mostrando um
           placeholder. {erro ? `Detalhe: ${erro.message}` : 'Verifique se o arquivo tem trilha de áudio.'}
         </div>
@@ -291,15 +276,23 @@ export function TelaTimeline({
       <div
         style={{
           padding: '16px 20px',
-          borderBottom: '1px solid #262626',
-          background: '#0c0c0c',
+          borderBottom: `1px solid ${COR_HAIRLINE}`,
+          background: COR_FUNDO,
           display: 'flex',
           justifyContent: 'center',
         }}
       >
         <div
           ref={registrarSlotDoPlayer}
-          style={{ width: '100%', maxWidth: 720, aspectRatio: '16 / 9', borderRadius: 8, overflow: 'hidden', background: '#111' }}
+          style={{
+            width: '100%',
+            maxWidth: 720,
+            aspectRatio: '16 / 9',
+            borderRadius: 10,
+            overflow: 'hidden',
+            background: '#000',
+            border: `1px solid ${COR_HAIRLINE}`,
+          }}
         />
       </div>
 
@@ -309,22 +302,20 @@ export function TelaTimeline({
         style={{ flex: 1, overflow: 'auto', position: 'relative' }}
       >
         <div style={{ display: 'grid', gridTemplateColumns: `${LARGURA_ROTULO}px 1fr`, minWidth: larguraTotal + LARGURA_ROTULO }}>
-          {/* Coluna de rótulos das trilhas, fixa à esquerda visualmente
-              via grid (rola junto verticalmente, mas o conteúdo da régua
-              e das trilhas é que rola horizontalmente por estarem dentro
-              do mesmo scroll container). */}
-          <div style={{ position: 'sticky', left: 0, zIndex: 2, background: '#151515' }}>
-            <div style={{ height: ALTURA_REGUA, borderBottom: '1px solid #262626' }} />
+          <div style={{ position: 'sticky', left: 0, zIndex: 2, background: COR_PAINEL }}>
+            <div style={{ height: ALTURA_REGUA, borderBottom: `1px solid ${COR_HAIRLINE}` }} />
             <div
               style={{
                 height: ALTURA_ONDA,
-                borderBottom: '1px solid #262626',
+                borderBottom: `1px solid ${COR_HAIRLINE}`,
                 display: 'flex',
                 alignItems: 'center',
                 paddingLeft: 10,
-                fontSize: 12,
-                fontWeight: 600,
-                color: '#cfcfcf',
+                fontSize: 11.5,
+                fontWeight: 700,
+                letterSpacing: '0.04em',
+                textTransform: 'uppercase',
+                color: COR_TEXTO_TERC,
               }}
             >
               Áudio
@@ -335,17 +326,17 @@ export function TelaTimeline({
                 display: 'flex',
                 alignItems: 'center',
                 paddingLeft: 10,
-                fontSize: 12,
-                fontWeight: 600,
-                color: '#cfcfcf',
+                fontSize: 11.5,
+                fontWeight: 700,
+                letterSpacing: '0.04em',
+                textTransform: 'uppercase',
+                color: COR_TEXTO_TERC,
               }}
             >
               Legenda
             </div>
           </div>
 
-          {/* Régua de tempo + trilhas, largura = larguraTotal, clicável
-              em toda a extensão vertical para buscar tempo. */}
           <div
             style={{ position: 'relative', width: larguraTotal, cursor: 'pointer', userSelect: 'none' }}
             onMouseDown={aoIniciarArraste}
@@ -353,8 +344,7 @@ export function TelaTimeline({
             onMouseUp={aoFinalizarArraste}
             onMouseLeave={aoFinalizarArraste}
           >
-            {/* Régua */}
-            <div style={{ position: 'relative', height: ALTURA_REGUA, borderBottom: '1px solid #262626', background: '#1a1a1a' }}>
+            <div style={{ position: 'relative', height: ALTURA_REGUA, borderBottom: `1px solid ${COR_HAIRLINE}`, background: '#1a1b20' }}>
               {marcadores.map((tempo) => (
                 <div
                   key={tempo}
@@ -363,13 +353,14 @@ export function TelaTimeline({
                     left: tempo * pxPorSegundo,
                     top: 0,
                     bottom: 0,
-                    borderLeft: '1px solid #333',
+                    borderLeft: `1px solid ${COR_HAIRLINE}`,
                     paddingLeft: 6,
                     fontSize: 11,
-                    color: '#b8b8b8',
+                    color: COR_TEXTO_SEC,
                     display: 'flex',
                     alignItems: 'center',
                     fontVariantNumeric: 'tabular-nums',
+                    fontFamily: 'var(--font-mono, monospace)',
                   }}
                 >
                   {formatarTempo(tempo)}
@@ -377,10 +368,9 @@ export function TelaTimeline({
               ))}
             </div>
 
-            {/* Waveform real */}
-            <div style={{ position: 'relative', height: ALTURA_ONDA, borderBottom: '1px solid #262626', background: '#121212' }}>
+            <div style={{ position: 'relative', height: ALTURA_ONDA, borderBottom: `1px solid ${COR_HAIRLINE}`, background: '#131418' }}>
               <svg width={larguraTotal} height={ALTURA_ONDA} style={{ display: 'block' }}>
-                <line x1="0" y1={ALTURA_ONDA / 2} x2={larguraTotal} y2={ALTURA_ONDA / 2} stroke="#2d2d2d" />
+                <line x1="0" y1={ALTURA_ONDA / 2} x2={larguraTotal} y2={ALTURA_ONDA / 2} stroke={COR_HAIRLINE} />
                 {picosParaDesenhar.map(([min, max], indice) => {
                   const x = (indice / picosParaDesenhar.length) * larguraTotal;
                   const largura = Math.max(1, larguraTotal / picosParaDesenhar.length);
@@ -393,7 +383,7 @@ export function TelaTimeline({
                       y={yTopo}
                       width={largura}
                       height={Math.max(1, yBase - yTopo)}
-                      fill={temWaveformReal ? '#43b5a0' : '#5c5c5c'}
+                      fill={temWaveformReal ? COR_WAVE : '#454851'}
                       opacity={temWaveformReal ? 0.92 : 0.6}
                     />
                   );
@@ -401,8 +391,7 @@ export function TelaTimeline({
               </svg>
             </div>
 
-            {/* Trilha de legendas */}
-            <div style={{ position: 'relative', height: ALTURA_TRILHA_LEGENDA, background: '#181818' }}>
+            <div style={{ position: 'relative', height: ALTURA_TRILHA_LEGENDA, background: '#16171b' }}>
               {palavras.map((palavra) => {
                 const inicio = Math.max(0, limitarNumero(palavra.inicio));
                 const fim = Math.max(inicio + 0.04, limitarNumero(palavra.fim, inicio + 0.04));
@@ -429,13 +418,14 @@ export function TelaTimeline({
                       textOverflow: 'ellipsis',
                       whiteSpace: 'nowrap',
                       borderRadius: 6,
-                      border: selecionada ? '2px solid #EF9F27' : emGrupo ? '2px solid #378ADD' : '1px solid #5c6470',
-                      background: palavra.estilo ? '#593d1f' : '#293241',
-                      color: '#fff',
+                      border: selecionada ? `2px solid ${COR_AMBAR}` : emGrupo ? `2px solid ${COR_AZUL}` : `1px solid ${COR_HAIRLINE}`,
+                      background: palavra.estilo ? 'rgba(239,159,39,0.16)' : '#1e2028',
+                      color: COR_TEXTO,
                       fontSize: 12,
                       padding: '0 8px',
                       cursor: 'pointer',
                       boxSizing: 'border-box',
+                      transition: 'border-color 100ms ease',
                     }}
                   >
                     {palavra.texto}
@@ -444,7 +434,6 @@ export function TelaTimeline({
               })}
             </div>
 
-            {/* Playhead — atravessa régua + trilhas */}
             <div
               style={{
                 position: 'absolute',
@@ -452,9 +441,10 @@ export function TelaTimeline({
                 top: 0,
                 bottom: 0,
                 width: 2,
-                background: '#ff4d4d',
+                background: COR_AMBAR,
                 pointerEvents: 'none',
                 zIndex: 3,
+                boxShadow: `0 0 8px ${COR_AMBAR}`,
               }}
             >
               <div
@@ -465,7 +455,7 @@ export function TelaTimeline({
                   width: 12,
                   height: 12,
                   borderRadius: '50%',
-                  background: '#ff4d4d',
+                  background: COR_AMBAR,
                 }}
               />
             </div>
