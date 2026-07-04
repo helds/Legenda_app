@@ -1,6 +1,6 @@
 // client/src/remotion/CaptionComposition.jsx
-import React, { useEffect } from 'react';
-import { useCurrentFrame, useVideoConfig, interpolate, Easing, delayRender, continueRender, cancelRender } from 'remotion';
+import React, { useEffect, useState } from 'react';
+import { AbsoluteFill, Video, useCurrentFrame, useVideoConfig, interpolate, Easing, delayRender, continueRender, cancelRender } from 'remotion';
 import { loadFont as carregarFonteCustomizada } from '@remotion/fonts';
 import { separarSilabas } from '../../../shared/silabizador';
 
@@ -196,7 +196,8 @@ function useCarregarFontesCustomizadas(fontes) {
   }, [chaveEstavel]);
 }
 
-export function CaptionComposition({ projeto, corFundo }) {
+export function CaptionComposition({ projeto, corFundo, videoPreviewSrc }) {
+  const [videoPreviewAspectRatio, setVideoPreviewAspectRatio] = useState(null);
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const tempoAtualSegundos = frame / fps;
@@ -218,6 +219,7 @@ export function CaptionComposition({ projeto, corFundo }) {
 
   // UNIFICAÇÃO DOS DEFAULTS DE POSICIONAMENTO E BOX DO DESIGN SYSTEM
   const estiloPadrao = projetoSeguro.estiloPadrao || {};
+  const posicaoX = estiloPadrao.posicaoX ?? 0.50;
   const posicaoY = estiloPadrao.posicaoY ?? 0.80; // Agora inicia perfeitamente em 80%
 
   const comFundo = estiloPadrao.comFundo ?? false;
@@ -229,41 +231,91 @@ export function CaptionComposition({ projeto, corFundo }) {
 
   const palavrasDoBloco = Array.isArray(blocoAtivo?.palavras) ? blocoAtivo.palavras : [];
 
+  const videoFrameStyle = (() => {
+    if (!videoPreviewSrc || !videoPreviewAspectRatio) {
+      return { position: 'absolute', inset: 0 };
+    }
+
+    const composicaoAspectRatio = 16 / 9;
+    if (videoPreviewAspectRatio < composicaoAspectRatio) {
+      return {
+        position: 'absolute',
+        top: 0,
+        bottom: 0,
+        left: '50%',
+        width: `${(videoPreviewAspectRatio / composicaoAspectRatio) * 100}%`,
+        transform: 'translateX(-50%)',
+      };
+    }
+
+    return {
+      position: 'absolute',
+      left: 0,
+      right: 0,
+      top: '50%',
+      height: `${(composicaoAspectRatio / videoPreviewAspectRatio) * 100}%`,
+      transform: 'translateY(-50%)',
+    };
+  })();
   return (
     <div
       style={{
         width: '100%',
         height: '100%',
-        backgroundColor: corFundo || 'transparent',
-        display: 'flex',
-        alignItems: 'flex-end',
-        justifyContent: 'center',
-        paddingBottom: `${(1 - posicaoY) * 100}%`,
+        backgroundColor: videoPreviewSrc ? '#000000' : (corFundo || 'transparent'),
+        position: 'relative',
+        overflow: 'hidden',
       }}
     >
-      {blocoAtivo && (
-        <div
-          style={{
-            display: 'flex',
-            gap: '0.4em',
-            flexWrap: 'wrap',
-            justifyContent: 'center',
-            backgroundColor: corFundoBox,
-            padding: paddingFundo,
-            borderRadius: borderRadiusFundo,
-            transition: 'background-color 0.15s ease'
-          }}
-        >
-          {palavrasDoBloco.map((palavra, i) => (
-            <Palavra
-              key={palavra?.id ?? i}
-              palavra={palavra}
-              estiloPadrao={estiloPadrao}
-              tempoAtualSegundos={tempoAtualSegundos}
-            />
-          ))}
-        </div>
+      {videoPreviewSrc && (
+        <AbsoluteFill>
+          <Video
+            src={videoPreviewSrc}
+            onLoadedMetadata={(event) => {
+              const video = event.currentTarget;
+              if (video.videoWidth && video.videoHeight) {
+                setVideoPreviewAspectRatio(video.videoWidth / video.videoHeight);
+              }
+            }}
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'contain',
+            }}
+          />
+        </AbsoluteFill>
       )}
+
+      <div style={{ ...videoFrameStyle, pointerEvents: 'none' }}>
+        {blocoAtivo && (
+          <div
+            style={{
+              position: 'absolute',
+              left: `${posicaoX * 100}%`,
+              top: `${posicaoY * 100}%`,
+              transform: 'translate(-50%, -50%)',
+              display: 'flex',
+              gap: '0.4em',
+              flexWrap: 'wrap',
+              justifyContent: 'center',
+              maxWidth: '92%',
+              backgroundColor: corFundoBox,
+              padding: paddingFundo,
+              borderRadius: borderRadiusFundo,
+              transition: 'background-color 0.15s ease'
+            }}
+          >
+            {palavrasDoBloco.map((palavra, i) => (
+              <Palavra
+                key={palavra?.id ?? i}
+                palavra={palavra}
+                estiloPadrao={estiloPadrao}
+                tempoAtualSegundos={tempoAtualSegundos}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

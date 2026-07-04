@@ -194,6 +194,83 @@ function ehPalavraValida(p) {
  * descartadas silenciosamente em vez de propagadas para o projeto â€” ver
  * ehPalavraValida() acima.
  */
+function normalizarTextoPalavra(texto) {
+  return String(texto || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .toLowerCase();
+}
+
+function listarPalavrasDoProjeto(projeto) {
+  const palavras = [];
+  (projeto?.blocos || []).forEach((bloco, blocoIndice) => {
+    (bloco?.palavras || []).forEach((palavra, palavraIndice) => {
+      palavras.push({ bloco, palavra, blocoIndice, palavraIndice });
+    });
+  });
+  return palavras;
+}
+
+function adaptarAlignmentAoProjetoExistente(projeto, blocosAlinhados) {
+  const palavrasOriginais = listarPalavrasDoProjeto(projeto);
+  const palavrasAlinhadas = listarPalavrasDoProjeto({ blocos: blocosAlinhados })
+    .map(({ palavra }) => palavra)
+    .filter(ehPalavraValida);
+
+  if (palavrasOriginais.length === 0 || palavrasAlinhadas.length === 0) {
+    return projeto;
+  }
+
+  const totalAjustavel = Math.min(palavrasOriginais.length, palavrasAlinhadas.length);
+  if (palavrasOriginais.length !== palavrasAlinhadas.length) {
+    console.warn(
+      `[audioSyncService] Quantidade de palavras diferente ao adaptar legenda existente: ` +
+      `${palavrasOriginais.length} no projeto, ${palavrasAlinhadas.length} no alignment. ` +
+      `Serão ajustadas ${totalAjustavel} palavra(s) por ordem.`
+    );
+  }
+
+  const blocosAtualizados = (projeto.blocos || []).map((bloco) => ({
+    ...bloco,
+    palavras: (bloco.palavras || []).map((palavra) => ({ ...palavra })),
+  }));
+
+  for (let i = 0; i < totalAjustavel; i += 1) {
+    const original = palavrasOriginais[i];
+    const alinhada = palavrasAlinhadas[i];
+    const palavraAtualizada = blocosAtualizados[original.blocoIndice].palavras[original.palavraIndice];
+
+    const textoOriginal = normalizarTextoPalavra(palavraAtualizada.texto);
+    const textoAlinhado = normalizarTextoPalavra(alinhada.texto);
+    if (textoOriginal && textoAlinhado && textoOriginal !== textoAlinhado) {
+      console.warn(
+        `[audioSyncService] Palavra ${i + 1} difere ao adaptar timing: ` +
+        `projeto="${palavraAtualizada.texto}" alignment="${alinhada.texto}".`
+      );
+    }
+
+    palavraAtualizada.inicio = alinhada.inicio;
+    palavraAtualizada.fim = alinhada.fim;
+    palavraAtualizada.volumeDb = alinhada.volumeDb;
+    palavraAtualizada.volumeNormalizado = alinhada.volumeNormalizado;
+  }
+
+  blocosAtualizados.forEach((bloco) => {
+    const palavrasValidas = (bloco.palavras || []).filter(
+      (palavra) => typeof palavra.inicio === 'number' && typeof palavra.fim === 'number'
+    );
+    if (palavrasValidas.length > 0) {
+      bloco.inicio = palavrasValidas[0].inicio;
+      bloco.fim = palavrasValidas[palavrasValidas.length - 1].fim;
+    }
+  });
+
+  return {
+    ...projeto,
+    blocos: blocosAtualizados,
+  };
+}
 function agruparPalavrasEmBlocos(palavrasAlinhadas) {
   const palavrasValidas = (palavrasAlinhadas || []).filter(ehPalavraValida);
 
@@ -304,5 +381,6 @@ function mapearVolumeParaTamanhoFonte(volumeNormalizado, opcoes = {}) {
 module.exports = {
   sincronizarAudioComTexto,
   agruparPalavrasEmBlocos,
+  adaptarAlignmentAoProjetoExistente,
   mapearVolumeParaTamanhoFonte,
 };

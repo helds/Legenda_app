@@ -1,5 +1,5 @@
 // client/src/App.jsx
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import { Player } from '@remotion/player';
 import { CaptionComposition } from './remotion/CaptionComposition';
 import { TelaImportacao } from './components/TelaImportacao';
@@ -7,6 +7,7 @@ import { ListaPalavras } from './components/ListaPalavras';
 import { PainelPropriedades } from './components/PainelPropriedades';
 import { PainelExportacao } from './components/PainelExportacao';
 import { PainelSincronizacaoAudio } from './components/PainelSincronizacaoAudio';
+import { TimelineCamadas } from './components/TimelineCamadas';
 
 const FPS = 30;
 
@@ -108,42 +109,6 @@ export default function App() {
   const [idsSelecionados, setIdsSelecionados] = useState([]);
   const [modoEdicao, setModoEdicao] = useState(MODO_GLOBAL);
 
-  const playerRef = useRef(null);
-  const videoRef = useRef(null);
-
-  // Mantém o <video> de referência sincronizado com o Player de legendas:
-  // toca/pausa junto e corrige o tempo quando o usuário busca (seek) ou
-  // quando o frame avança além de uma tolerância pequena.
-  useEffect(() => {
-    const player = playerRef.current;
-    const video = videoRef.current;
-    if (!player || !video) return;
-
-    const aoTocar = () => { video.play().catch(() => {}); };
-    const aoPausar = () => video.pause();
-    const aoAtualizarFrame = (e) => {
-      const tempoAlvo = e.detail.frame / FPS;
-      if (Math.abs(video.currentTime - tempoAlvo) > 0.15) {
-        video.currentTime = tempoAlvo;
-      }
-    };
-    const aoBuscar = (e) => {
-      video.currentTime = e.detail.frame / FPS;
-    };
-
-    player.addEventListener('play', aoTocar);
-    player.addEventListener('pause', aoPausar);
-    player.addEventListener('frameupdate', aoAtualizarFrame);
-    player.addEventListener('seeked', aoBuscar);
-
-    return () => {
-      player.removeEventListener('play', aoTocar);
-      player.removeEventListener('pause', aoPausar);
-      player.removeEventListener('frameupdate', aoAtualizarFrame);
-      player.removeEventListener('seeked', aoBuscar);
-    };
-  }, [projeto?.caminhoVideo]);
-
   const aoCriarProjeto = useCallback((id, proj) => {
     setProjetoId(id);
     setProjeto(proj);
@@ -220,17 +185,12 @@ export default function App() {
   }
 
   // Chamado pelo PainelSincronizacaoAudio quando o alignment via
-  // WhisperX termina com sucesso. Se o server já mesclou o resultado no
-  // projeto (quando projetoId foi enviado), `resultado.projeto` vem
-  // pronto para substituir o estado local. Caso contrário (sem
-  // projetoId), aplicamos os novos blocos no projeto atual em memória.
+  // WhisperX termina com sucesso. O backend devolve o mesmo projeto com
+  // apenas tempos/volume atualizados; texto, IDs, blocos e estilos s�o
+  // preservados.
   function aoConcluirSincronizacaoAudio(resultado) {
     if (resultado.projeto) {
       setProjeto(resultado.projeto);
-      return;
-    }
-    if (resultado.blocos) {
-      setProjeto((atual) => ({ ...atual, blocos: resultado.blocos }));
     }
   }
 
@@ -247,6 +207,7 @@ export default function App() {
     : projeto.estiloPadrao;
 
   const duracaoFrames = calcularDuracaoFrames(projeto.blocos);
+  const duracaoSegundos = duracaoFrames / FPS;
   const urlVideo = resolverUrlVideo(projeto.caminhoVideo);
 
   // O modo Seleção só faz sentido visualmente quando há de fato algo
@@ -272,34 +233,21 @@ export default function App() {
         <h2 style={{ margin: 0, fontSize: 18, fontWeight: 500 }}>{projeto.nome}</h2>
 
         <PreviewErrorBoundary>
-          <div style={{ background: '#111', borderRadius: 8, overflow: 'hidden', position: 'relative', aspectRatio: '16 / 9' }}>
-            {urlVideo && (
-              <video
-                ref={videoRef}
-                src={urlVideo}
-                playsInline
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  zIndex: 0,
-                  width: '100%',
-                  height: '100%',
-                  objectFit: 'contain',
-                  background: '#000',
-                }}
-              />
-            )}
-            <div style={{ position: 'absolute', inset: 0, zIndex: 1 }}>
+          <div style={{ width: '100%', height: 'min(58vh, calc((100vw - 400px) * 9 / 16))', minHeight: 360, background: '#111', borderRadius: 8, overflow: 'hidden', position: 'relative' }}>
+            <div style={{ position: 'absolute', inset: 0 }}>
               <Player
-                ref={playerRef}
                 component={CaptionComposition}
                 durationInFrames={duracaoFrames}
                 fps={FPS}
                 compositionWidth={1920}
                 compositionHeight={1080}
-                style={{ width: '100%', height: '100%', backgroundColor: 'transparent' }}
+                style={{ width: '100%', height: '100%' }}
                 controls
-                inputProps={{ projeto, corFundo: urlVideo ? 'transparent' : '#1a1a1a' }}
+                inputProps={{
+                  projeto,
+                  corFundo: urlVideo ? 'transparent' : '#1a1a1a',
+                  videoPreviewSrc: urlVideo,
+                }}
               />
             </div>
           </div>
@@ -310,6 +258,14 @@ export default function App() {
             Nenhum vídeo de referência selecionado — o preview mostra só a legenda.
           </p>
         )}
+
+        <TimelineCamadas
+          blocos={projeto.blocos}
+          duracaoSegundos={duracaoSegundos}
+          palavraSelecionadaId={palavraSelecionadaId}
+          idsSelecionados={idsSelecionados}
+          aoSelecionarPalavra={aoSelecionarPalavra}
+        />
 
         <div>
           <h3 style={{ fontSize: 16, fontWeight: 500 }}>

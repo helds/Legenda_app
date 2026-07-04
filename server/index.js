@@ -11,7 +11,10 @@ const {
   aplicarPresetAPalavras,
   resolverEstilo,
 } = require('../shared/projectModel');
-const { sincronizarAudioComTexto } = require('./audioSyncService');
+const {
+  sincronizarAudioComTexto,
+  adaptarAlignmentAoProjetoExistente,
+} = require('./audioSyncService');
 
 const PORT = process.env.PORT || 4000;
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
@@ -49,6 +52,17 @@ function carregarProjetoDoDisco(id) {
   const filePath = path.join(PROJECTS_DIR, `${id}.json`);
   if (!fs.existsSync(filePath)) return null;
   return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+}
+function carregarProjeto(id) {
+  return projetosEmMemoria.get(id) || carregarProjetoDoDisco(id);
+}
+
+function extrairTextoRevisadoDoProjeto(projeto) {
+  return (projeto?.blocos || [])
+    .flatMap((bloco) => bloco?.palavras || [])
+    .map((palavra) => palavra?.texto || '')
+    .filter(Boolean)
+    .join(' ');
 }
 
 // Extensões de fonte aceitas para cópia — mesma lista que o scanner do
@@ -322,58 +336,51 @@ app.post('/api/audio/sincronizar', async (req, res) => {
   const { projetoId, caminhoAudio, texto, idioma } = req.body;
 
   if (!caminhoAudio || typeof caminhoAudio !== 'string') {
-    return res.status(400).json({ erro: 'Parâmetro "caminhoAudio" é obrigatório.' });
-  }
-  if (!texto || !texto.trim()) {
-    return res.status(400).json({ erro: 'Parâmetro "texto" é obrigatório.' });
+    return res.status(400).json({ erro: 'Par�metro "caminhoAudio" � obrigat�rio.' });
   }
 
   try {
+    const projeto = projetoId ? carregarProjeto(projetoId) : null;
+    if (projetoId && !projeto) {
+      return res.status(404).json({ erro: 'Projeto n�o encontrado.' });
+    }
+
+    const textoParaAlignment = projeto
+      ? extrairTextoRevisadoDoProjeto(projeto)
+      : texto;
+
+    if (!textoParaAlignment || !textoParaAlignment.trim()) {
+      return res.status(400).json({ erro: 'O projeto n�o possui texto revisado para sincronizar.' });
+    }
+
     const resultado = await sincronizarAudioComTexto({
       caminhoAudio,
-      texto,
+      texto: textoParaAlignment,
       idioma,
       aoProgredir: (linha) => {
-        // Log simples no console do server; o painel na interface não
-        // acompanha isso em tempo real (não há streaming/SSE aqui), mas
-        // fica registrado para depuração caso o alignment demore ou falhe.
         console.log(`[audio_sync] ${linha}`);
       },
     });
 
-    // Se um projetoId foi informado, já mescla os novos blocos (com
-    // timing + volume por palavra) dentro do projeto salvo em disco,
-    // preservando estiloPadrao, presets e overrides de palavra que já
-    // existiam — os `blocos` antigos são inteiramente substituídos pelos
-    // novos, já que o alignment refaz a divisão de palavras do zero.
     if (projetoId) {
-      const projeto =
-        projetosEmMemoria.get(projetoId) || carregarProjetoDoDisco(projetoId);
-
-      if (!projeto) {
-        return res.status(404).json({ erro: 'Projeto não encontrado.' });
-      }
-
-      projeto.blocos = resultado.blocos;
-      projetosEmMemoria.set(projetoId, projeto);
-      salvarProjetoEmDisco(projetoId, projeto);
+      const projetoAtualizado = adaptarAlignmentAoProjetoExistente(projeto, resultado.blocos);
+      projetosEmMemoria.set(projetoId, projetoAtualizado);
+      salvarProjetoEmDisco(projetoId, projetoAtualizado);
 
       return res.json({
         id: projetoId,
-        projeto,
+        projeto: projetoAtualizado,
         volumeDbMin: resultado.volumeDbMin,
         volumeDbMax: resultado.volumeDbMax,
       });
     }
 
-    // Sem projetoId, devolve só o resultado bruto do alignment.
     res.json(resultado);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ erro: 'Falha na sincronização de áudio.', detalhe: err.message });
+    res.status(500).json({ erro: 'Falha na sincroniza��o de �udio.', detalhe: err.message });
   }
 });
-
 // Dispara a exportação (delegado ao módulo Remotion — ver server/render.js)
 app.post('/api/projetos/:id/exportar', async (req, res) => {
   const projeto =
