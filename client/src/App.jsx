@@ -1,5 +1,6 @@
 // client/src/App.jsx
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { Player } from '@remotion/player';
 import { CaptionComposition } from './remotion/CaptionComposition';
 import { TelaImportacao } from './components/TelaImportacao';
@@ -7,7 +8,7 @@ import { ListaPalavras } from './components/ListaPalavras';
 import { PainelPropriedades } from './components/PainelPropriedades';
 import { PainelExportacao } from './components/PainelExportacao';
 import { PainelSincronizacaoAudio } from './components/PainelSincronizacaoAudio';
-import { TimelineCamadas } from './components/TimelineCamadas';
+import { TelaTimeline } from './components/TelaTimeline';
 
 const FPS = 30;
 
@@ -17,6 +18,12 @@ const FPS = 30;
 // - 'selecao': edita o(s) override(s) da palavra/grupo selecionado.
 const MODO_GLOBAL = 'global';
 const MODO_SELECAO = 'selecao';
+
+// As duas "páginas" do programa depois de um projeto estar carregado.
+// Sem router: troca simples de view state, já que o app não precisa de
+// URLs próprias para cada tela (é um app desktop via Electron).
+const TELA_EDITOR = 'editor';
+const TELA_TIMELINE = 'timeline';
 
 // CORREÇÃO (bugfix preview sumindo): Error Boundary ao redor da área de
 // preview. Antes, se algo lançasse uma exceção durante o render do
@@ -108,6 +115,21 @@ export default function App() {
   const [palavraSelecionadaId, setPalavraSelecionadaId] = useState(null);
   const [idsSelecionados, setIdsSelecionados] = useState([]);
   const [modoEdicao, setModoEdicao] = useState(MODO_GLOBAL);
+  const [telaAtual, setTelaAtual] = useState(TELA_EDITOR);
+  const [tempoAtualSegundos, setTempoAtualSegundos] = useState(0);
+  const [estaTocando, setEstaTocando] = useState(false);
+
+  const playerRef = useRef(null);
+
+  // Cada tela (Editor / Timeline) tem seu próprio "slot" fixo no DOM onde
+  // o Player pode ser exibido. Os dois slots existem o tempo todo (as
+  // duas telas ficam sempre montadas, uma escondida via CSS) — só o
+  // conteúdo do Player é redirecionado de um pra outro via createPortal,
+  // conforme `telaAtual` muda. Isso é o que garante que o componente
+  // <Player> em si nunca desmonta ao trocar de tela.
+  const slotEditorRef = useRef(null);
+  const slotTimelineRef = useRef(null);
+  const [, forcarRerender] = useState(0);
 
   const aoCriarProjeto = useCallback((id, proj) => {
     setProjetoId(id);
@@ -186,13 +208,68 @@ export default function App() {
 
   // Chamado pelo PainelSincronizacaoAudio quando o alignment via
   // WhisperX termina com sucesso. O backend devolve o mesmo projeto com
-  // apenas tempos/volume atualizados; texto, IDs, blocos e estilos s�o
+  // apenas tempos/volume atualizados; texto, IDs, blocos e estilos s�o
   // preservados.
   function aoConcluirSincronizacaoAudio(resultado) {
     if (resultado.projeto) {
       setProjeto(resultado.projeto);
     }
   }
+
+  // --- Ponte entre o Player do Remotion e a Timeline ---
+  //
+  // A Timeline precisa saber "onde estamos" a cada instante (pra mover o
+  // playhead e rolar a tela) e precisa poder "pular para" um tempo
+  // (clique/arraste na régua ou nas trilhas). O Player expõe uma API
+  // imperativa pra isso via ref: addEventListener('frameupdate', ...) e
+  // seekTo(frame). Ficamos ouvindo o evento sempre que o player existir,
+  // independente de qual tela está visível — assim, ao trocar de tela,
+  // o tempo já está atualizado desde o primeiro frame.
+  useEffect(() => {
+    const player = playerRef.current;
+    if (!player) return undefined;
+
+    function aoAtualizarFrame(evento) {
+      setTempoAtualSegundos(evento.detail.frame / FPS);
+    }
+    function aoTocar() {
+      setEstaTocando(true);
+    }
+    function aoPausar() {
+      setEstaTocando(false);
+    }
+
+    player.addEventListener('frameupdate', aoAtualizarFrame);
+    player.addEventListener('play', aoTocar);
+    player.addEventListener('pause', aoPausar);
+    player.addEventListener('ended', aoPausar);
+    return () => {
+      player.removeEventListener('frameupdate', aoAtualizarFrame);
+      player.removeEventListener('play', aoTocar);
+      player.removeEventListener('pause', aoPausar);
+      player.removeEventListener('ended', aoPausar);
+    };
+    // Reexecuta quando o projeto muda de identidade (novo projeto carregado
+    // -> Player é remontado -> playerRef.current é uma instância nova).
+  }, [projeto]);
+
+  const aoBuscarTempo = useCallback((segundos) => {
+    const player = playerRef.current;
+    if (!player) return;
+    const frame = Math.round(segundos * FPS);
+    player.seekTo(frame);
+    setTempoAtualSegundos(segundos);
+  }, []);
+
+  const aoAlternarPlayPause = useCallback(() => {
+    const player = playerRef.current;
+    if (!player) return;
+    if (player.isPlaying()) {
+      player.pause();
+    } else {
+      player.play();
+    }
+  }, []);
 
   if (!projeto) {
     return <TelaImportacao aoCriarProjeto={aoCriarProjeto} />;
@@ -227,45 +304,123 @@ export default function App() {
     )
     .join(' ');
 
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', height: '100vh' }}>
-      <div style={{ display: 'flex', flexDirection: 'column', padding: 20, gap: 16, overflowY: 'auto' }}>
-        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 500 }}>{projeto.nome}</h2>
+  // O <Player> do Remotion é montado UMA VEZ e nunca desmontado enquanto
+  // houver um projeto carregado. Trocar de tela é feito SEM condicionar o
+  // componente <Player> em si a nenhum `if` — em vez disso, o App sempre
+  // renderiza a mesma árvore (Editor e Timeline coexistem no DOM, um
+  // escondido com display:none), e o <Player> vive fisicamente dentro de
+  // um único container fixo. Um portal (createPortal) só "teletransporta"
+  // o conteúdo visual do player para dentro do slot da tela ativa, mas o
+  // componente React nunca é desmontado nesse processo.
+  //
+  // Antes, a Timeline fazia um `return` inteiramente separado do Editor:
+  // como cada `return` descreve uma árvore diferente, o React desmontava
+  // o <Player> ao trocar de tela (e recriava ao voltar). Isso explicava
+  // os sintomas relatados:
+  //   1. "não consigo dar play na Timeline" — não havia player nenhum lá.
+  //   2. "trava e volta alguns segundos" — o player era destruído no meio
+  //      de uma reprodução/seek, e ao ser recriado reiniciava do zero,
+  //      dando a impressão de estar "tentando sincronizar".
+  //   3. Legenda "dessincronizada" — mesma causa: cada remontagem reseta
+  //      o relógio interno do player, então o tempoAtualSegundos que a
+  //      Timeline usava para posicionar o playhead/legenda ficava
+  //      referenciando uma instância que já não existia mais.
+  // Callback de ref para os slots: precisa disparar um re-render quando o
+  // nó do DOM é anexado pela primeira vez (na montagem inicial, o ref
+  // ainda é null durante o primeiro render, então o createPortal do slot
+  // ativo não teria alvo até essa segunda passada).
+  function registrarSlotEditor(no) {
+    const primeiraVez = !slotEditorRef.current && !!no;
+    slotEditorRef.current = no;
+    if (primeiraVez) forcarRerender((n) => n + 1);
+  }
+  function registrarSlotTimeline(no) {
+    const primeiraVez = !slotTimelineRef.current && !!no;
+    slotTimelineRef.current = no;
+    if (primeiraVez) forcarRerender((n) => n + 1);
+  }
 
+  const slotAtivo = telaAtual === TELA_EDITOR ? slotEditorRef.current : slotTimelineRef.current;
+
+  const playerPortado = slotAtivo
+    ? createPortal(
         <PreviewErrorBoundary>
-          <div style={{ width: '100%', height: 'min(58vh, calc((100vw - 400px) * 9 / 16))', minHeight: 360, background: '#111', borderRadius: 8, overflow: 'hidden', position: 'relative' }}>
-            <div style={{ position: 'absolute', inset: 0 }}>
-              <Player
-                component={CaptionComposition}
-                durationInFrames={duracaoFrames}
-                fps={FPS}
-                compositionWidth={1920}
-                compositionHeight={1080}
-                style={{ width: '100%', height: '100%' }}
-                controls
-                inputProps={{
-                  projeto,
-                  corFundo: urlVideo ? 'transparent' : '#1a1a1a',
-                  videoPreviewSrc: urlVideo,
-                }}
-              />
-            </div>
-          </div>
-        </PreviewErrorBoundary>
+          <Player
+            ref={playerRef}
+            component={CaptionComposition}
+            durationInFrames={duracaoFrames}
+            fps={FPS}
+            compositionWidth={1920}
+            compositionHeight={1080}
+            style={{ width: '100%', height: '100%' }}
+            controls={telaAtual === TELA_EDITOR}
+            inputProps={{
+              projeto,
+              corFundo: urlVideo ? 'transparent' : '#1a1a1a',
+              videoPreviewSrc: urlVideo,
+            }}
+          />
+        </PreviewErrorBoundary>,
+        slotAtivo
+      )
+    : null;
+
+  return (
+    <>
+      {playerPortado}
+
+      {/* As duas telas ficam sempre montadas — a inativa só some via
+          display:none. Cada uma tem um slot fixo (registrarSlotEditor /
+          registrarSlotTimeline) esperando para receber o Player via
+          portal quando for a tela ativa. */}
+      <div style={{ display: telaAtual === TELA_TIMELINE ? 'block' : 'none' }}>
+        <TelaTimeline
+          projeto={projeto}
+          urlAudio={urlVideo}
+          duracaoSegundos={duracaoSegundos}
+          tempoAtualSegundos={tempoAtualSegundos}
+          aoBuscarTempo={aoBuscarTempo}
+          estaTocando={estaTocando}
+          aoAlternarPlayPause={aoAlternarPlayPause}
+          palavraSelecionadaId={palavraSelecionadaId}
+          idsSelecionados={idsSelecionados}
+          aoSelecionarPalavra={aoSelecionarPalavra}
+          aoVoltarParaEditor={() => setTelaAtual(TELA_EDITOR)}
+          registrarSlotDoPlayer={registrarSlotTimeline}
+        />
+      </div>
+
+      <div style={{ display: telaAtual === TELA_EDITOR ? 'grid' : 'none', gridTemplateColumns: '1fr 320px', height: '100vh' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', padding: 20, gap: 16, overflowY: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 500 }}>{projeto.nome}</h2>
+          <button
+            onClick={() => setTelaAtual(TELA_TIMELINE)}
+            style={{
+              padding: '8px 14px',
+              borderRadius: 6,
+              border: '1px solid #ccc',
+              background: '#111',
+              color: '#fff',
+              cursor: 'pointer',
+              fontSize: 13,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Abrir Timeline →
+          </button>
+        </div>
+
+        <div
+          ref={registrarSlotEditor}
+          style={{ width: '100%', height: 'min(58vh, calc((100vw - 400px) * 9 / 16))', minHeight: 360, borderRadius: 8, overflow: 'hidden', background: '#111' }}
+        />
 
         {!urlVideo && (
           <p style={{ fontSize: 12, color: '#999', margin: 0 }}>
             Nenhum vídeo de referência selecionado — o preview mostra só a legenda.
           </p>
         )}
-
-        <TimelineCamadas
-          blocos={projeto.blocos}
-          duracaoSegundos={duracaoSegundos}
-          palavraSelecionadaId={palavraSelecionadaId}
-          idsSelecionados={idsSelecionados}
-          aoSelecionarPalavra={aoSelecionarPalavra}
-        />
 
         <div>
           <h3 style={{ fontSize: 16, fontWeight: 500 }}>
@@ -368,6 +523,7 @@ export default function App() {
 
         <PainelExportacao projetoId={projetoId} />
       </div>
-    </div>
+      </div>
+    </>
   );
 }
