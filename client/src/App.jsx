@@ -6,6 +6,7 @@ import { TelaImportacao } from './components/TelaImportacao';
 import { ListaPalavras } from './components/ListaPalavras';
 import { PainelPropriedades } from './components/PainelPropriedades';
 import { PainelExportacao } from './components/PainelExportacao';
+import { PainelSincronizacaoAudio } from './components/PainelSincronizacaoAudio';
 
 const FPS = 30;
 
@@ -27,8 +28,8 @@ function resolverUrlVideo(caminhoVideo) {
 }
 
 function encontrarPalavra(blocos, id) {
-  for (const bloco of blocos) {
-    const palavra = bloco.palavras.find((p) => p.id === id);
+  for (const bloco of blocos || []) {
+    const palavra = (bloco?.palavras || []).find((p) => p.id === id);
     if (palavra) return palavra;
   }
   return null;
@@ -36,7 +37,7 @@ function encontrarPalavra(blocos, id) {
 
 function calcularDuracaoFrames(blocos) {
   let max = 0;
-  blocos.forEach((b) => { if (b.fim > max) max = b.fim; });
+  (blocos || []).forEach((b) => { if (b?.fim > max) max = b.fim; });
   return Math.ceil((max + 0.5) * FPS) || FPS * 5;
 }
 
@@ -158,6 +159,21 @@ export default function App() {
     setProjeto({ ...projeto });
   }
 
+  // Chamado pelo PainelSincronizacaoAudio quando o alignment via
+  // WhisperX termina com sucesso. Se o server já mesclou o resultado no
+  // projeto (quando projetoId foi enviado), `resultado.projeto` vem
+  // pronto para substituir o estado local. Caso contrário (sem
+  // projetoId), aplicamos os novos blocos no projeto atual em memória.
+  function aoConcluirSincronizacaoAudio(resultado) {
+    if (resultado.projeto) {
+      setProjeto(resultado.projeto);
+      return;
+    }
+    if (resultado.blocos) {
+      setProjeto((atual) => ({ ...atual, blocos: resultado.blocos }));
+    }
+  }
+
   if (!projeto) {
     return <TelaImportacao aoCriarProjeto={aoCriarProjeto} />;
   }
@@ -178,6 +194,17 @@ export default function App() {
   // Seleção sem nada selecionado ainda, mostramos uma dica em vez do
   // painel global ou de um painel "vazio".
   const haSelecao = !!palavraSelecionada || idsSelecionados.length > 0;
+
+  // Texto atual das legendas, usado para pré-preencher o campo de texto
+  // transcrito no painel de sincronização de áudio (o usuário pode
+  // ajustar antes de disparar o alignment). Blindado contra blocos ou
+  // palavras em formato inesperado (ex: undefined) para não derrubar a
+  // renderização de todo o App caso algo venha malformado.
+  const textoAtualDasLegendas = (projeto.blocos || [])
+    .map((bloco) =>
+      (bloco?.palavras || []).map((p) => p?.texto || '').join(' ')
+    )
+    .join(' ');
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', height: '100vh' }}>
@@ -246,6 +273,16 @@ export default function App() {
             />
           </div>
         )}
+
+        <hr style={{ border: 'none', borderTop: '1px solid #eee' }} />
+
+        <PainelSincronizacaoAudio
+          caminhoAudio={projeto.caminhoVideo}
+          textoInicial={textoAtualDasLegendas}
+          aoConcluir={aoConcluirSincronizacaoAudio}
+          urlEndpointSincronizacao="/api/audio/sincronizar"
+          projetoId={projetoId}
+        />
       </div>
 
       <div style={{ borderLeft: '1px solid #eee', padding: 20, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 24 }}>

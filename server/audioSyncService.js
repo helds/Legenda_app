@@ -42,6 +42,22 @@ function gerarId(prefixo) {
   return `${prefixo}_${crypto.randomBytes(4).toString('hex')}`;
 }
 
+// Extrai apenas o objeto JSON de um texto que pode conter linhas de log
+// residuais antes ou depois dele. Isso protege contra bibliotecas
+// terceiras (whisperx, pyannote, speechbrain, etc.) que eventualmente
+// escrevam algo em stdout antes do JSON final, mesmo com o aligner.py
+// silenciando o logging conhecido — é uma defesa extra, não a correção
+// primária (que fica no próprio aligner.py).
+function extrairJsonDaSaida(stdoutBuffer) {
+  const inicio = stdoutBuffer.indexOf('{');
+  const fim = stdoutBuffer.lastIndexOf('}');
+  if (inicio === -1 || fim === -1 || fim < inicio) {
+    throw new Error('Nenhum objeto JSON encontrado na saída do script.');
+  }
+  const trecho = stdoutBuffer.slice(inicio, fim + 1);
+  return JSON.parse(trecho);
+}
+
 /**
  * Executa o script Python de alignment como subprocesso.
  *
@@ -86,17 +102,23 @@ function executarAlignmentPython({
       '--idioma', idioma,
     ];
 
-    const processo = spawn(pythonBin, argumentos);
+    // PYTHONIOENCODING garante que o processo Python filho escreva
+    // stdout/stderr em UTF-8 mesmo que o console do Windows esteja
+    // configurado com outro code page — reforça, do lado do processo,
+    // a mesma correção já aplicada explicitamente dentro do aligner.py.
+    const processo = spawn(pythonBin, argumentos, {
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+    });
 
     let stdoutBuffer = '';
     let stderrBuffer = '';
 
     processo.stdout.on('data', (chunk) => {
-      stdoutBuffer += chunk.toString();
+      stdoutBuffer += chunk.toString('utf-8');
     });
 
     processo.stderr.on('data', (chunk) => {
-      const texto = chunk.toString();
+      const texto = chunk.toString('utf-8');
       stderrBuffer += texto;
       if (aoProgredir) {
         texto.split('\n').filter(Boolean).forEach((linha) => aoProgredir(linha));
@@ -123,7 +145,7 @@ function executarAlignmentPython({
       }
 
       try {
-        const resultado = JSON.parse(stdoutBuffer);
+        const resultado = extrairJsonDaSaida(stdoutBuffer);
         resolve(resultado);
       } catch (err) {
         reject(new Error(

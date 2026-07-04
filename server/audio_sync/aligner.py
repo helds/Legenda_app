@@ -37,11 +37,47 @@ Este script é chamado como subprocesso pelo server Node
 (server/audioSyncService.js), que faz o parsing do JSON de saída e o
 converte para o formato de "blocos/palavras" usado por
 shared/projectModel.js.
+
+IMPORTANTE sobre stdout/stderr: o server Node lê o stdout inteiro do
+processo e espera que ele contenha SOMENTE o JSON final — qualquer outra
+coisa impressa em stdout (logs de bibliotecas terceiras, warnings, etc.)
+quebra o parsing. Por isso, logo no início deste script, reconfiguramos
+o logging padrão do Python e de bibliotecas conhecidas (whisperx,
+pyannote, speechbrain) para escrever em stderr, não em stdout. Também
+forçamos UTF-8 explicitamente na escrita de stdout/stderr para evitar
+caracteres acentuados corrompidos no Windows, onde o encoding padrão do
+console costuma ser cp1252/cp850 em vez de UTF-8.
 """
 
 import argparse
+import io
 import json
+import logging
 import sys
+
+# --- Correção de encoding (Windows corrompe acentos sem isso) ---
+# No Windows, sys.stdout/stderr por padrão usam o code page do console
+# (ex: cp1252), não UTF-8. Isso corrompe qualquer acento (á, ç, ã, etc.)
+# tanto no JSON final quanto nas mensagens de log. Reconfiguramos os dois
+# fluxos para UTF-8 explicitamente antes de qualquer output.
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
+# --- Correção de vazamento de logs para stdout ---
+# Bibliotecas como whisperx, pyannote.audio e speechbrain usam o módulo
+# `logging` do Python internamente, e algumas configuram handlers que
+# escrevem em stdout (em vez do padrão, que seria stderr). Isso faz
+# mensagens tipo "Performing voice activity detection..." aparecerem
+# misturadas ANTES do JSON de saída, quebrando o parsing no lado Node
+# (que espera stdout = só JSON). A correção abaixo remove qualquer
+# handler pré-existente que aponte para stdout e força um handler root
+# único apontando para stderr, cobrindo o logging de qualquer biblioteca
+# que seja importada depois.
+logging.basicConfig(level=logging.WARNING, stream=sys.stderr, force=True)
+for nome_logger in ("whisperx", "pyannote", "speechbrain", "faster_whisper"):
+    logger = logging.getLogger(nome_logger)
+    logger.handlers = []
+    logger.propagate = True
 
 import numpy as np
 
@@ -199,6 +235,7 @@ def main():
         log(f"Resultado salvo em {args.saida}")
     else:
         print(saida_json)
+        sys.stdout.flush()
 
 
 if __name__ == "__main__":

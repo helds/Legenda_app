@@ -14,17 +14,20 @@ import React, { useState } from 'react';
 //   2. Usuário confirma o texto já transcrito (pré-preenchido a partir
 //      do projeto atual, se houver).
 //   3. Ao clicar em "Sincronizar", o componente chama o endpoint HTTP
-//      do server (ex: POST /api/projetos/:id/sincronizar-audio).
+//      do server (POST /api/audio/sincronizar). Se `projetoId` for
+//      informado, o server já mescla o resultado no projeto salvo em
+//      disco e devolve o `projeto` completo pronto para uso.
 //   4. Enquanto roda, mostra mensagens de progresso (o server pode
 //      transmitir os logs do processo Python via streaming/SSE — aqui
-//      tratamos de forma simplificada com polling ou resposta única).
-//   5. Ao concluir, chama `aoConcluir(blocosAtualizados)` para que o
+//      tratamos de forma simplificada com resposta única).
+//   5. Ao concluir, chama `aoConcluir(resultado)` para que o
 //      componente pai atualize o projeto com os novos tempos/volumes.
 
 export function PainelSincronizacaoAudio({
   caminhoAudio,
   textoInicial,
   urlEndpointSincronizacao = '/api/audio/sincronizar',
+  projetoId,
   aoConcluir,
 }) {
   const [texto, setTexto] = useState(textoInicial || '');
@@ -53,7 +56,7 @@ export function PainelSincronizacaoAudio({
       const resposta = await fetch(urlEndpointSincronizacao, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ caminhoAudio, texto, idioma }),
+        body: JSON.stringify({ projetoId, caminhoAudio, texto, idioma }),
       });
 
       if (!resposta.ok) {
@@ -62,7 +65,9 @@ export function PainelSincronizacaoAudio({
       }
 
       const resultado = await resposta.json();
-      // Esperado: { blocos, volumeDbMin, volumeDbMax }
+      // Esperado: { id, projeto, volumeDbMin, volumeDbMax } quando
+      // projetoId foi enviado, ou { blocos, volumeDbMin, volumeDbMax }
+      // caso contrário.
       setStatus('concluido');
       if (aoConcluir) aoConcluir(resultado);
     } catch (err) {

@@ -11,6 +11,7 @@ const {
   aplicarPresetAPalavras,
   resolverEstilo,
 } = require('../shared/projectModel');
+const { sincronizarAudioComTexto } = require('./audioSyncService');
 
 const PORT = process.env.PORT || 4000;
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
@@ -308,6 +309,69 @@ app.post('/api/projetos/:id/aplicar-preset', (req, res) => {
   salvarProjetoEmDisco(req.params.id, atualizado);
 
   res.json({ id: req.params.id, projeto: atualizado });
+});
+
+// Dispara a sincronização automática de áudio + texto via IA (WhisperX,
+// através de server/audioSyncService.js -> server/audio_sync/aligner.py).
+// Recebe o texto já transcrito e o caminho do áudio/vídeo do projeto,
+// executa o forced alignment + análise de volume, e já mescla o
+// resultado (novos `blocos` com timing e volumeNormalizado por palavra)
+// dentro do projeto salvo — o client não precisa reconciliar nada, só
+// atualizar o estado local com o `projeto` retornado.
+app.post('/api/audio/sincronizar', async (req, res) => {
+  const { projetoId, caminhoAudio, texto, idioma } = req.body;
+
+  if (!caminhoAudio || typeof caminhoAudio !== 'string') {
+    return res.status(400).json({ erro: 'Parâmetro "caminhoAudio" é obrigatório.' });
+  }
+  if (!texto || !texto.trim()) {
+    return res.status(400).json({ erro: 'Parâmetro "texto" é obrigatório.' });
+  }
+
+  try {
+    const resultado = await sincronizarAudioComTexto({
+      caminhoAudio,
+      texto,
+      idioma,
+      aoProgredir: (linha) => {
+        // Log simples no console do server; o painel na interface não
+        // acompanha isso em tempo real (não há streaming/SSE aqui), mas
+        // fica registrado para depuração caso o alignment demore ou falhe.
+        console.log(`[audio_sync] ${linha}`);
+      },
+    });
+
+    // Se um projetoId foi informado, já mescla os novos blocos (com
+    // timing + volume por palavra) dentro do projeto salvo em disco,
+    // preservando estiloPadrao, presets e overrides de palavra que já
+    // existiam — os `blocos` antigos são inteiramente substituídos pelos
+    // novos, já que o alignment refaz a divisão de palavras do zero.
+    if (projetoId) {
+      const projeto =
+        projetosEmMemoria.get(projetoId) || carregarProjetoDoDisco(projetoId);
+
+      if (!projeto) {
+        return res.status(404).json({ erro: 'Projeto não encontrado.' });
+      }
+
+      projeto.blocos = resultado.blocos;
+      projetosEmMemoria.set(projetoId, projeto);
+      salvarProjetoEmDisco(projetoId, projeto);
+
+      return res.json({
+        id: projetoId,
+        projeto,
+        volumeDbMin: resultado.volumeDbMin,
+        volumeDbMax: resultado.volumeDbMax,
+      });
+    }
+
+    // Sem projetoId, devolve só o resultado bruto do alignment.
+    res.json(resultado);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Falha na sincronização de áudio.', detalhe: err.message });
+  }
 });
 
 // Dispara a exportação (delegado ao módulo Remotion — ver server/render.js)
