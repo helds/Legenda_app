@@ -17,6 +17,66 @@ const FPS = 30;
 const MODO_GLOBAL = 'global';
 const MODO_SELECAO = 'selecao';
 
+// CORREÇÃO (bugfix preview sumindo): Error Boundary ao redor da área de
+// preview. Antes, se algo lançasse uma exceção durante o render do
+// CaptionComposition/Player (ex: dado malformado vindo da sincronização
+// de áudio), o React desmontava a árvore inteira sem aviso nenhum — a
+// própria <div> do vídeo desaparecia da tela, sem nenhuma mensagem, e sem
+// abrir o DevTools não havia como saber o que tinha acontecido. Com este
+// boundary, qualquer erro de render é capturado e mostrado como uma
+// mensagem legível no próprio lugar onde o preview ficaria, com a stack
+// trace completa — o resto da interface (lista de palavras, painéis,
+// exportação) continua funcionando normalmente.
+class PreviewErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { erro: null };
+  }
+
+  static getDerivedStateFromError(erro) {
+    return { erro };
+  }
+
+  componentDidCatch(erro, info) {
+    console.error('Erro ao renderizar o preview:', erro, info);
+  }
+
+  render() {
+    if (this.state.erro) {
+      return (
+        <div
+          style={{
+            padding: 20,
+            background: '#2a0000',
+            color: '#ffb3b3',
+            borderRadius: 8,
+            fontSize: 13,
+            fontFamily: 'monospace',
+            whiteSpace: 'pre-wrap',
+            overflowY: 'auto',
+            aspectRatio: '16 / 9',
+          }}
+        >
+          <strong>Erro ao renderizar o preview.</strong>
+          {'\n'}
+          Isso normalmente acontece quando alguma palavra do projeto tem
+          dados de tempo ou texto inválidos (comum logo após uma
+          sincronização de áudio malsucedida). O restante da interface
+          continua funcionando — você pode tentar sincronizar novamente
+          ou restaurar um projeto salvo anteriormente.
+          {'\n\n'}
+          <strong>Detalhe técnico:</strong>
+          {'\n'}
+          {this.state.erro.message}
+          {'\n\n'}
+          {this.state.erro.stack}
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // Resolve a URL que o <video> do preview pode usar a partir do caminho
 // salvo no projeto: pode ser um upload antigo (/uploads/arquivo, servido
 // estaticamente) ou um caminho absoluto local escolhido via diálogo do
@@ -211,37 +271,39 @@ export default function App() {
       <div style={{ display: 'flex', flexDirection: 'column', padding: 20, gap: 16, overflowY: 'auto' }}>
         <h2 style={{ margin: 0, fontSize: 18, fontWeight: 500 }}>{projeto.nome}</h2>
 
-        <div style={{ background: '#111', borderRadius: 8, overflow: 'hidden', position: 'relative', aspectRatio: '16 / 9' }}>
-          {urlVideo && (
-            <video
-              ref={videoRef}
-              src={urlVideo}
-              playsInline
-              style={{
-                position: 'absolute',
-                inset: 0,
-                zIndex: 0,
-                width: '100%',
-                height: '100%',
-                objectFit: 'contain',
-                background: '#000',
-              }}
-            />
-          )}
-          <div style={{ position: 'absolute', inset: 0, zIndex: 1 }}>
-            <Player
-              ref={playerRef}
-              component={CaptionComposition}
-              durationInFrames={duracaoFrames}
-              fps={FPS}
-              compositionWidth={1920}
-              compositionHeight={1080}
-              style={{ width: '100%', height: '100%', backgroundColor: 'transparent' }}
-              controls
-              inputProps={{ projeto, corFundo: urlVideo ? 'transparent' : '#1a1a1a' }}
-            />
+        <PreviewErrorBoundary>
+          <div style={{ background: '#111', borderRadius: 8, overflow: 'hidden', position: 'relative', aspectRatio: '16 / 9' }}>
+            {urlVideo && (
+              <video
+                ref={videoRef}
+                src={urlVideo}
+                playsInline
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  zIndex: 0,
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'contain',
+                  background: '#000',
+                }}
+              />
+            )}
+            <div style={{ position: 'absolute', inset: 0, zIndex: 1 }}>
+              <Player
+                ref={playerRef}
+                component={CaptionComposition}
+                durationInFrames={duracaoFrames}
+                fps={FPS}
+                compositionWidth={1920}
+                compositionHeight={1080}
+                style={{ width: '100%', height: '100%', backgroundColor: 'transparent' }}
+                controls
+                inputProps={{ projeto, corFundo: urlVideo ? 'transparent' : '#1a1a1a' }}
+              />
+            </div>
           </div>
-        </div>
+        </PreviewErrorBoundary>
 
         {!urlVideo && (
           <p style={{ fontSize: 12, color: '#999', margin: 0 }}>

@@ -26,7 +26,7 @@ function formaDitongo(texto, i) {
   const a = texto[i].toLowerCase();
   const b = texto[i + 1].toLowerCase();
   if (!ehVogal(a) || !ehVogal(b)) return false;
-  
+
   // CORREÇÃO: Identifica ditongos nasais com til para evitar que se separem (ex: ão, ãe, õe)
   const par = a + b;
   if (['ão', 'ãe', 'õe'].includes(par)) return true;
@@ -35,13 +35,24 @@ function formaDitongo(texto, i) {
   return false;
 }
 
+// CORREÇÃO (bugfix preview sumindo): esta função agora SEMPRE retorna um
+// array de strings. Antes, quando `palavra` era undefined/null/não-string
+// (o que passou a acontecer depois da sincronização de áudio via WhisperX,
+// caso alguma palavra alinhada chegasse sem o campo `texto`), o código
+// fazia `return [palavra]` — ou seja, um array contendo `undefined`, não
+// uma string vazia. Quem consome esse retorno (CaptionComposition.jsx)
+// faz `.map(silaba => [...silaba])`, e `[...undefined]` lança
+// "TypeError: undefined is not iterable" bem no meio do render do
+// Remotion Player. Sem Error Boundary, essa exceção derrubava a árvore
+// React inteira — por isso a própria <div> do preview desaparecia, não
+// só a legenda.
 function separarSilabas(palavra) {
-  if (!palavra || typeof palavra !== 'string') return [palavra];
+  if (!palavra || typeof palavra !== 'string') return [''];
   const texto = palavra;
   const n = texto.length;
   const nucleos = [];
   let i = 0;
-  
+
   while (i < n) {
     if (ehVogal(texto[i])) {
       let fim = i;
@@ -93,10 +104,15 @@ function separarSilabas(palavra) {
   return silabas.filter((s) => s.length > 0);
 }
 
+// CORREÇÃO: blindado contra `palavra.texto` ausente/vazio e contra
+// `inicio`/`fim` não numéricos (evita NaN se propagando pelo timing).
 function distribuirTempoPorSilabas(palavra) {
-  const { texto, inicio, fim } = palavra;
+  const texto = typeof palavra?.texto === 'string' ? palavra.texto : '';
+  const inicio = typeof palavra?.inicio === 'number' ? palavra.inicio : 0;
+  const fim = typeof palavra?.fim === 'number' ? palavra.fim : inicio;
+
   const silabas = separarSilabas(texto);
-  const totalChars = texto.length;
+  const totalChars = texto.length || 1;
   const duracao = fim - inicio;
 
   let acumulado = 0;

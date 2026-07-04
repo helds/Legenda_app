@@ -161,19 +161,54 @@ function limparArquivoTemp(caminho) {
   fs.unlink(caminho, () => {}); // best-effort, ignora erro se já não existir
 }
 
+// CORREÇÃO (bugfix preview sumindo): valida cada palavra retornada pelo
+// aligner Python antes de aceitá-la no projeto. O aligner.py já filtra
+// palavras sem `start`/`end` (ver executar_alinhamento), mas essa é uma
+// segunda camada de defesa do lado Node — caso o JSON venha de uma versão
+// futura do script, de um processo antigo em cache, ou de qualquer fonte
+// que não garanta o mesmo contrato. Sem essa validação, uma palavra com
+// `texto` ausente/vazio ou `inicio`/`fim` não numéricos passava direto
+// para o projeto e quebrava o preview no client (CaptionComposition
+// tentava iterar sobre um texto undefined).
+function ehPalavraValida(p) {
+  return (
+    !!p &&
+    typeof p.texto === 'string' &&
+    p.texto.trim().length > 0 &&
+    typeof p.inicio === 'number' &&
+    typeof p.fim === 'number' &&
+    Number.isFinite(p.inicio) &&
+    Number.isFinite(p.fim) &&
+    p.fim >= p.inicio
+  );
+}
+
 /**
  * Agrupa uma lista plana de palavras alinhadas (com tempo + volume) em
  * blocos de legenda, com base em pausas de silêncio e duração máxima.
  * Cada palavra recebe um id único e o campo `volumeNormalizado` bruto
  * calculado pelo Python é preservado para uso posterior (ex: um preset
  * de estilo que escala o tamanho da fonte pelo volume).
+ *
+ * Palavras malformadas (sem texto válido ou timing inválido) são
+ * descartadas silenciosamente em vez de propagadas para o projeto — ver
+ * ehPalavraValida() acima.
  */
 function agruparPalavrasEmBlocos(palavrasAlinhadas) {
+  const palavrasValidas = (palavrasAlinhadas || []).filter(ehPalavraValida);
+
+  const descartadas = (palavrasAlinhadas || []).length - palavrasValidas.length;
+  if (descartadas > 0) {
+    console.warn(
+      `[audioSyncService] ${descartadas} palavra(s) descartada(s) do alignment por dados inválidos (texto ausente ou timing inválido).`
+    );
+  }
+
   const blocos = [];
   let blocoAtual = null;
 
-  palavrasAlinhadas.forEach((palavraAlinhada, indice) => {
-    const anterior = palavrasAlinhadas[indice - 1];
+  palavrasValidas.forEach((palavraAlinhada, indice) => {
+    const anterior = palavrasValidas[indice - 1];
     const pausaDesdeAnterior = anterior ? palavraAlinhada.inicio - anterior.fim : 0;
     const duracaoBlocoAtual = blocoAtual
       ? palavraAlinhada.fim - blocoAtual.inicio
@@ -199,6 +234,13 @@ function agruparPalavrasEmBlocos(palavrasAlinhadas) {
       texto: palavraAlinhada.texto,
       inicio: palavraAlinhada.inicio,
       fim: palavraAlinhada.fim,
+      // CORREÇÃO: `estilo: null` explícito, para o formato bater com o
+      // que o parser de .srt sempre produziu (ver shared/srtParser.js) —
+      // sem isso, o campo simplesmente não existia nas palavras vindas da
+      // sincronização de áudio, o que é inofensivo por si só (resolverEstilo
+      // trata `undefined` como "sem override"), mas deixava o formato de
+      // dados inconsistente entre as duas origens.
+      estilo: null,
       volumeDb: palavraAlinhada.volumeDb,
       volumeNormalizado: palavraAlinhada.volumeNormalizado,
     });
@@ -227,6 +269,12 @@ async function sincronizarAudioComTexto({ caminhoAudio, texto, idioma, aoProgred
   });
 
   const blocos = agruparPalavrasEmBlocos(resultado.palavras);
+
+  if (blocos.length === 0) {
+    throw new Error(
+      'A sincronização não produziu nenhuma palavra válida. Verifique se o áudio e o texto transcrito correspondem entre si.'
+    );
+  }
 
   return {
     blocos,

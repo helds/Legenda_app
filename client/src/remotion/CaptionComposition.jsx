@@ -22,26 +22,44 @@ function resolverEstilo(estiloPadrao, overrideIndividual) {
   return { ...estiloPadrao, ...overrideIndividual };
 }
 
+// CORREÇÃO (bugfix preview sumindo): `texto` pode chegar undefined/null/
+// não-string vindo de blocos gerados pela sincronização de áudio
+// (WhisperX), caso alguma entrada do alignment não traga o campo `texto`
+// preenchido corretamente. Antes, `[...texto]` com texto undefined lançava
+// "TypeError: undefined is not iterable" DENTRO do render do Player — sem
+// Error Boundary, isso derruba a árvore React inteira (por isso a própria
+// div do preview sumia por completo, não só a legenda).
 function dividirEmUnidades(texto, modoRevelacao) {
+  const textoSeguro = typeof texto === 'string' ? texto : '';
+
   if (modoRevelacao === 'silaba') {
-    return separarSilabas(texto).map((silaba) => [...silaba]);
+    return separarSilabas(textoSeguro).map((silaba) => [...(typeof silaba === 'string' ? silaba : '')]);
   }
   if (modoRevelacao === 'palavra') {
-    return [[...texto]];
+    return [[...textoSeguro]];
   }
-  return [...texto].map((char) => [char]);
+  return [...textoSeguro].map((char) => [char]);
 }
 
 function Palavra({ palavra, estiloPadrao, tempoAtualSegundos }) {
+  // CORREÇÃO: palavra malformada (sem texto válido) não deve quebrar o
+  // resto do bloco — apenas essa palavra simplesmente não renderiza nada.
+  if (!palavra || typeof palavra.texto !== 'string') {
+    return null;
+  }
+
   const estilo = resolverEstilo(estiloPadrao, palavra.estilo);
   const { texto, inicio, fim } = palavra;
 
+  const inicioSeguro = typeof inicio === 'number' ? inicio : 0;
+  const fimSeguro = typeof fim === 'number' ? fim : inicioSeguro;
+
   const modoRevelacao = estilo.modoRevelacao || 'palavra';
   const unidades = dividirEmUnidades(texto, modoRevelacao);
-  const totalUnidades = unidades.length;
+  const totalUnidades = unidades.length || 1;
 
-  const duracao = fim - inicio;
-  
+  const duracao = fimSeguro - inicioSeguro;
+
   // VALORES PADRÕES ALINHADOS COM O DESIGN SYSTEM V1.0
   const duracaoTransicaoMs = estilo.duracaoTransicaoMs ?? 120;
   const duracaoTransicaoSeg = duracaoTransicaoMs / 1000;
@@ -52,7 +70,7 @@ function Palavra({ palavra, estiloPadrao, tempoAtualSegundos }) {
   const pesoFonte = estilo.pesoFonte ?? 400;
   const italico = estilo.italico ?? false;
   const estiloSoNoDestaque = estilo.estiloSoNoDestaque ?? false;
-  
+
   const escalaPulo = estilo.escalaPulo ?? estilo.escalaDestaque ?? 1.3;
   const elevacaoPulo = estilo.elevacaoPulo ?? 0.25;
 
@@ -65,15 +83,15 @@ function Palavra({ palavra, estiloPadrao, tempoAtualSegundos }) {
         fontSize: `${tamanhoBase}px`,
         fontFamily: estilo.fonte || 'sans-serif',
         // Se estiloSoNoDestaque estiver ativo, o estilo base ignora o peso/itálico customizado da palavra
-        fontWeight: estiloSoNoDestaque && tempoAtualSegundos < inicio ? (estiloPadrao.pesoFonte ?? 400) : pesoFonte,
-        fontStyle: estiloSoNoDestaque && tempoAtualSegundos < inicio ? ((estiloPadrao.italico ?? false) ? 'italic' : 'normal') : (italico ? 'italic' : 'normal'),
+        fontWeight: estiloSoNoDestaque && tempoAtualSegundos < inicioSeguro ? (estiloPadrao.pesoFonte ?? 400) : pesoFonte,
+        fontStyle: estiloSoNoDestaque && tempoAtualSegundos < inicioSeguro ? ((estiloPadrao.italico ?? false) ? 'italic' : 'normal') : (italico ? 'italic' : 'normal'),
       }}
     >
       {unidades.map((unidadeChars, indexUnidade) => {
-        const textoUnidade = unidadeChars.join('');
-        
+        const textoUnidade = (unidadeChars || []).join('');
+
         const tempoPorUnidade = duracao / totalUnidades;
-        const inicioUnidade = inicio + indexUnidade * tempoPorUnidade;
+        const inicioUnidade = inicioSeguro + indexUnidade * tempoPorUnidade;
         const fimUnidade = inicioUnidade + tempoPorUnidade;
 
         // Efeito Pop de Pulo e Escala usando Math.sin
@@ -118,20 +136,24 @@ function Palavra({ palavra, estiloPadrao, tempoAtualSegundos }) {
 }
 
 // COLETOR DE FONTES CUSTOMIZADAS
+// CORREÇÃO: `projeto` pode chegar undefined no primeiro frame de render
+// do Player, e `bloco`/`palavras` podem vir malformados dependendo da
+// origem dos dados (import .srt vs. sincronização de áudio) — todos os
+// acessos abaixo agora usam optional chaining para nunca lançar.
 function coletarFontesUsadas(projeto) {
   const fontes = new Map();
-  const padrao = projeto.estiloPadrao || {};
-  
+  const padrao = projeto?.estiloPadrao || {};
+
   if (padrao.fonte && padrao.fonteUrl) {
     const chave = `${padrao.fonte}_${padrao.pesoFonte ?? 400}_${padrao.italico ? 'italic' : 'normal'}`;
     fontes.set(chave, { familia: padrao.fonte, url: padrao.fonteUrl, peso: padrao.pesoFonte ?? 400, italico: padrao.italico ?? false, chave });
   }
 
-  if (projeto.blocos) {
+  if (Array.isArray(projeto?.blocos)) {
     for (const bloco of projeto.blocos) {
-      if (bloco.palavras) {
+      if (Array.isArray(bloco?.palavras)) {
         for (const pal of bloco.palavras) {
-          if (pal.estilo?.fonte && pal.estilo?.fonteUrl) {
+          if (pal?.estilo?.fonte && pal?.estilo?.fonteUrl) {
             const f = pal.estilo;
             const chave = `${f.fonte}_${f.pesoFonte ?? 400}_${f.italico ? 'italic' : 'normal'}`;
             fontes.set(chave, { familia: f.fonte, url: f.fonteUrl, peso: f.pesoFonte ?? 400, italico: f.italico ?? false, chave });
@@ -153,14 +175,24 @@ function useCarregarFontesCustomizadas(fontes) {
 
     const handle = delayRender('Carregando fontes customizadas das legendas');
     Promise.all(
-      fontesParaCarregar.map(f => 
+      fontesParaCarregar.map(f =>
         carregarFonteCustomizada({
           family: f.familia, url: f.url, weight: String(f.peso), style: f.italico ? 'italic' : 'normal',
         }).then(() => { fontesJaCarregadas.add(f.chave); })
       )
     )
       .then(() => continueRender(handle))
-      .catch((err) => cancelRender(err));
+      // CORREÇÃO: se o carregamento de uma fonte falhar (ex: fonteUrl
+      // apontando para um arquivo que não existe mais, servidor local
+      // fora do ar, ou 404), usar cancelRender(err) travava o render do
+      // Remotion. No Player isso deixa a composição presa e a UI pode
+      // parecer "sumida" mesmo sem exceção React. Preferimos logar o erro
+      // e liberar o render assim mesmo — a fonte cai no fallback
+      // (sans-serif) em vez de travar o preview inteiro.
+      .catch((err) => {
+        console.error('Falha ao carregar fonte customizada, seguindo com fallback:', err);
+        continueRender(handle);
+      });
   }, [chaveEstavel]);
 }
 
@@ -169,24 +201,33 @@ export function CaptionComposition({ projeto, corFundo }) {
   const { fps } = useVideoConfig();
   const tempoAtualSegundos = frame / fps;
 
-  const fontesUsadas = coletarFontesUsadas(projeto);
+  // CORREÇÃO: `projeto` pode ainda não ter chegado (primeiro frame do
+  // Player, ou props temporariamente indefinidas). Sem isso, qualquer
+  // acesso abaixo a projeto.blocos/projeto.estiloPadrao lançava e
+  // derrubava a árvore React inteira.
+  const projetoSeguro = projeto || { blocos: [], estiloPadrao: {} };
+
+  const fontesUsadas = coletarFontesUsadas(projetoSeguro);
   useCarregarFontesCustomizadas(fontesUsadas);
 
-  const blocoAtivo = projeto.blocos.find(
-    (b) => tempoAtualSegundos >= b.inicio && tempoAtualSegundos <= b.fim
+  const blocos = Array.isArray(projetoSeguro.blocos) ? projetoSeguro.blocos : [];
+  const blocoAtivo = blocos.find(
+    (b) => b && typeof b.inicio === 'number' && typeof b.fim === 'number' &&
+      tempoAtualSegundos >= b.inicio && tempoAtualSegundos <= b.fim
   );
 
   // UNIFICAÇÃO DOS DEFAULTS DE POSICIONAMENTO E BOX DO DESIGN SYSTEM
-  const estiloPadrao = projeto.estiloPadrao || {};
-  const posicaoX = estiloPadrao.posicaoX ?? 0.50;
+  const estiloPadrao = projetoSeguro.estiloPadrao || {};
   const posicaoY = estiloPadrao.posicaoY ?? 0.80; // Agora inicia perfeitamente em 80%
 
   const comFundo = estiloPadrao.comFundo ?? false;
-  const corFundoBox = comFundo 
-    ? obterCorFundoRgba(estiloPadrao.corFundo ?? '#000000', estiloPadrao.opacidadeFundo ?? 0.6) 
+  const corFundoBox = comFundo
+    ? obterCorFundoRgba(estiloPadrao.corFundo ?? '#000000', estiloPadrao.opacidadeFundo ?? 0.6)
     : 'transparent';
   const paddingFundo = comFundo ? `${estiloPadrao.paddingFundo ?? 10}px` : '0px';
   const borderRadiusFundo = comFundo ? `${estiloPadrao.borderRadiusFundo ?? 6}px` : '0px';
+
+  const palavrasDoBloco = Array.isArray(blocoAtivo?.palavras) ? blocoAtivo.palavras : [];
 
   return (
     <div
@@ -201,11 +242,11 @@ export function CaptionComposition({ projeto, corFundo }) {
       }}
     >
       {blocoAtivo && (
-        <div 
-          style={{ 
-            display: 'flex', 
-            gap: '0.4em', 
-            flexWrap: 'wrap', 
+        <div
+          style={{
+            display: 'flex',
+            gap: '0.4em',
+            flexWrap: 'wrap',
             justifyContent: 'center',
             backgroundColor: corFundoBox,
             padding: paddingFundo,
@@ -213,9 +254,9 @@ export function CaptionComposition({ projeto, corFundo }) {
             transition: 'background-color 0.15s ease'
           }}
         >
-          {blocoAtivo.palavras.map((palavra, i) => (
+          {palavrasDoBloco.map((palavra, i) => (
             <Palavra
-              key={i}
+              key={palavra?.id ?? i}
               palavra={palavra}
               estiloPadrao={estiloPadrao}
               tempoAtualSegundos={tempoAtualSegundos}
