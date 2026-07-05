@@ -72,7 +72,7 @@ comunica com ele automaticamente via proxy configurado no Vite.
 3. Clique em qualquer palavra na lista para abrir o painel de
    propriedades à direita — ajuste fonte, tamanho, espessura, cor,
    escala no destaque, e deslocamento X/Y.
-4. Para editar várias palavras de uma vez, segure **Shift** e clique em
+4. Para editar várias palavras de uma vez, segure **Ctrl** e clique em
    cada uma — o painel passa a aplicar um preset ao grupo inteiro.
 5. O preview ao vivo (player no centro da tela) mostra a animação
    letra a letra em tempo real.

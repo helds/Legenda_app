@@ -150,7 +150,7 @@ export default function App() {
 
   useEffect(() => {
     if (!projeto) return;
-    
+
     if (projeto.largura && projeto.altura) {
       setDimensoesVideo({ largura: projeto.largura, altura: projeto.altura });
       return;
@@ -166,7 +166,7 @@ export default function App() {
         }
       };
     } else {
-      setDimensoesVideo({ largura: 1080, altura: 1920 }); 
+      setDimensoesVideo({ largura: 1080, altura: 1920 });
     }
   }, [projeto]);
 
@@ -175,7 +175,7 @@ export default function App() {
 
     function lidarComArrastar(e) {
       e.preventDefault();
-      const paddingDoApp = 24; 
+      const paddingDoApp = 24;
       const novaAltura = window.innerHeight - e.clientY - paddingDoApp;
       const alturaSegura = Math.max(100, Math.min(novaAltura, window.innerHeight * 0.65));
       setAlturaPainelFerramentas(alturaSegura);
@@ -194,9 +194,9 @@ export default function App() {
     };
   }, [estaArrastandoPainel]);
 
-  const aoSelecionarPalavra = useCallback((id, comShift) => {
+  const aoSelecionarPalavra = useCallback((id, comCtrl) => {
     setModoEdicao(MODO_SELECAO);
-    if (comShift) {
+    if (comCtrl) {
       setIdsSelecionados((prev) =>
         prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
       );
@@ -293,27 +293,71 @@ export default function App() {
     [projetoId]
   );
 
+  // CORREÇÃO (agulha não acompanhava o play): este efeito é o único
+  // lugar que escuta os eventos reais do Remotion Player
+  // (frameupdate/play/pause/ended). `estaTocando` e `tempoAtualSegundos`
+  // vindos daqui são passados tanto para a tela de Editor quanto para a
+  // tela de Timeline — nenhuma das duas mais mantém seu próprio estado
+  // de "está tocando" ou seu próprio clock.
+  //
+  // BUG CORRIGIDO: antes este efeito dependia só de `[projeto]`. Como o
+  // <Player> do Remotion é montado via createPortal dentro de um slot
+  // (`slotEditor`/`slotTimeline`) que só existe DEPOIS do primeiro
+  // render, `playerRef.current` ainda era `null` no momento em que este
+  // efeito rodava — o efeito então caía no early return e o listener de
+  // `frameupdate` NUNCA era registrado. Resultado: o vídeo tocava
+  // normalmente (o Player tem seus próprios controles internos), mas
+  // `tempoAtualSegundos` no App nunca era atualizado, então a agulha
+  // (e o wavesurfer) ficavam parados. Agora o efeito depende também de
+  // `slotEditor`/`slotTimeline`, que só passam a existir depois que o
+  // portal monta — e ainda assim faz um pequeno polling via
+  // requestAnimationFrame como rede de segurança, caso o ref do Player
+  // demore um tick extra para ser preenchido.
   useEffect(() => {
-    const player = playerRef.current;
-    if (!player) return undefined;
+    let cancelado = false;
+    let tentativaId = null;
+    let limpar = null;
 
-    function aoAtualizarFrame(evento) {
-      setTempoAtualSegundos(evento.detail.frame / FPS);
+    function registrar(player) {
+      function aoAtualizarFrame(evento) {
+        setTempoAtualSegundos(evento.detail.frame / FPS);
+      }
+      function aoTocar() { setEstaTocando(true); }
+      function aoPausar() { setEstaTocando(false); }
+
+      player.addEventListener('frameupdate', aoAtualizarFrame);
+      player.addEventListener('play', aoTocar);
+      player.addEventListener('pause', aoPausar);
+      player.addEventListener('ended', aoPausar);
+
+      return () => {
+        player.removeEventListener('frameupdate', aoAtualizarFrame);
+        player.removeEventListener('play', aoTocar);
+        player.removeEventListener('pause', aoPausar);
+        player.removeEventListener('ended', aoPausar);
+      };
     }
-    function aoTocar() { setEstaTocando(true); }
-    function aoPausar() { setEstaTocando(false); }
 
-    player.addEventListener('frameupdate', aoAtualizarFrame);
-    player.addEventListener('play', aoTocar);
-    player.addEventListener('pause', aoPausar);
-    player.addEventListener('ended', aoPausar);
+    function tentarRegistrar() {
+      if (cancelado) return;
+      const player = playerRef.current;
+      if (player) {
+        limpar = registrar(player);
+      } else {
+        // Ref ainda não disponível neste tick (portal ainda montando) —
+        // tenta de novo no próximo frame até conseguir ou desmontar.
+        tentativaId = requestAnimationFrame(tentarRegistrar);
+      }
+    }
+
+    tentarRegistrar();
+
     return () => {
-      player.removeEventListener('frameupdate', aoAtualizarFrame);
-      player.removeEventListener('play', aoTocar);
-      player.removeEventListener('pause', aoPausar);
-      player.removeEventListener('ended', aoPausar);
+      cancelado = true;
+      if (tentativaId) cancelAnimationFrame(tentativaId);
+      if (limpar) limpar();
     };
-  }, [projeto]);
+  }, [projeto, slotEditor, slotTimeline]);
 
   const aoBuscarTempo = useCallback((segundos) => {
     const player = playerRef.current;
@@ -323,6 +367,12 @@ export default function App() {
     setTempoAtualSegundos(segundos);
   }, []);
 
+  // CORREÇÃO (sincronia vídeo/áudio): esta função age diretamente sobre
+  // o Remotion Player (única fonte de verdade de play/pause). Antes, o
+  // botão de play da tela de Timeline não usava esta função — chamava
+  // apenas `setTocandoLocal`, que só dava play/pause no WaveSurfer.
+  // Agora `TelaTimeline` recebe `aoAlternarPlayPause` como prop e o
+  // botão de play de lá comanda o mesmo player que o Editor usa.
   const aoAlternarPlayPause = useCallback(() => {
     const player = playerRef.current;
     if (!player) return;
@@ -346,7 +396,7 @@ export default function App() {
 
   const larguraProjeto = dimensoesVideo.largura;
   const alturaProjeto = dimensoesVideo.altura;
-  
+
   const videoDeveFicarNaDireita = larguraProjeto > 1080;
 
   const palavraSelecionada = palavraSelecionadaId
@@ -371,25 +421,25 @@ export default function App() {
 
   const playerPortado = slotAtivo
     ? createPortal(
-        <PreviewErrorBoundary>
-          <Player
-            ref={playerRef}
-            component={CaptionComposition}
-            durationInFrames={duracaoFrames}
-            fps={FPS}
-            compositionWidth={larguraProjeto} 
-            compositionHeight={alturaProjeto}
-            style={{ width: '100%', height: '100%' }}
-            controls={telaAtual === TELA_EDITOR}
-            inputProps={{
-              projeto,
-              corFundo: urlVideo ? 'transparent' : '#1a1a1a',
-              videoPreviewSrc: urlVideo,
-            }}
-          />
-        </PreviewErrorBoundary>,
-        slotAtivo
-      )
+      <PreviewErrorBoundary>
+        <Player
+          ref={playerRef}
+          component={CaptionComposition}
+          durationInFrames={duracaoFrames}
+          fps={FPS}
+          compositionWidth={larguraProjeto}
+          compositionHeight={alturaProjeto}
+          style={{ width: '100%', height: '100%' }}
+          controls={telaAtual === TELA_EDITOR}
+          inputProps={{
+            projeto,
+            corFundo: urlVideo ? 'transparent' : '#1a1a1a',
+            videoPreviewSrc: urlVideo,
+          }}
+        />
+      </PreviewErrorBoundary>,
+      slotAtivo
+    )
     : null;
 
   return (
@@ -402,9 +452,9 @@ export default function App() {
           urlAudio={urlVideo}
           duracaoSegundos={duracaoSegundos}
           tempoAtualSegundos={tempoAtualSegundos}
-          aoBuscarTempo={aoBuscarTempo}
           estaTocando={estaTocando}
           aoAlternarPlayPause={aoAlternarPlayPause}
+          aoBuscarTempo={aoBuscarTempo}
           palavraSelecionadaId={palavraSelecionadaId}
           idsSelecionados={idsSelecionados}
           aoSelecionarPalavra={aoSelecionarPalavra}
@@ -414,11 +464,11 @@ export default function App() {
         />
       </div>
 
-      <div 
-        className="app-shell" 
-        style={{ 
-          display: telaAtual === TELA_EDITOR ? 'flex' : 'none', 
-          gap: '24px', 
+      <div
+        className="app-shell"
+        style={{
+          display: telaAtual === TELA_EDITOR ? 'flex' : 'none',
+          gap: '24px',
           flexDirection: 'row',
           height: '100vh',     /* Ocupa exatamente a janela toda */
           width: '100vw',      /* Garante a largura também */
@@ -428,27 +478,27 @@ export default function App() {
         }}
       >
         {/* COLUNA ESQUERDA: Sessão Principal de Trabalho */}
-        <div style={{ 
-          flex: 1, 
-          minWidth: 0, 
-          display: 'flex', 
-          flexDirection: 'column', 
+        <div style={{
+          flex: 1,
+          minWidth: 0,
+          display: 'flex',
+          flexDirection: 'column',
           gap: '20px',
           minHeight: 0 /* Em vez de height: 100%, isto impede overflow */
         }}>
-          
+
           {/* CABEÇALHO */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
             <h2 className="app-title" style={{ margin: 0 }}>{projeto.nome}</h2>
             <div style={{ display: 'flex', gap: '10px' }}>
-              <button 
+              <button
                 className={`btn ${mostrarSincronizacao ? 'btn--primary' : ''}`}
                 onClick={() => setMostrarSincronizacao(!mostrarSincronizacao)}
                 style={{ padding: '8px 16px', fontWeight: 600, borderColor: 'var(--accent-amber)' }}
               >
                 {mostrarSincronizacao ? 'Fechar Sincronização' : 'Sincronização Automática'}
               </button>
-              
+
               <button className="btn" onClick={() => setTelaAtual(TELA_TIMELINE)}>
                 Abrir Timeline →
               </button>
@@ -466,14 +516,14 @@ export default function App() {
             display: 'flex',
             flexDirection: videoDeveFicarNaDireita ? 'row-reverse' : 'row',
             gap: '24px',
-            flex: 1, 
+            flex: 1,
             minHeight: 0, /* ESSENCIAL PARA FLEXBOX NÃO TRANSBORDAR */
             alignItems: 'stretch'
           }}>
-            
+
             {/* VÍDEO PREVIEW */}
             <div style={{
-              width: videoDeveFicarNaDireita ? '50%' : '320px', 
+              width: videoDeveFicarNaDireita ? '50%' : '320px',
               flexShrink: 0,
               display: 'flex',
               flexDirection: 'column'
@@ -493,24 +543,24 @@ export default function App() {
             </div>
 
             {/* LISTA DE PALAVRAS E OPÇÕES (COLUNA FLEXÍVEL) */}
-            <div style={{ 
-              flex: 1, 
-              display: 'flex', 
-              flexDirection: 'column', 
+            <div style={{
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
               minWidth: 0,
               minHeight: 0 /* Substitui height: 100% para evitar "leaking" */
             }}>
               <h3 className="panel-title" style={{ marginBottom: 10, fontSize: 13, flexShrink: 0 }}>
                 Palavras <span style={{ textTransform: 'none', color: 'var(--text-tertiary)', fontWeight: 400, letterSpacing: 0 }}>
-                  — clique para editar, shift+clique para grupo
+                  — clique para editar, ctrl+clique para grupo
                 </span>
               </h3>
-              
+
               {/* CONTENTOR DA LISTA DE PALAVRAS */}
-              <div style={{ 
-                flex: 1, 
-                minHeight: 0, 
-                overflowY: 'auto', 
+              <div style={{
+                flex: 1,
+                minHeight: 0,
+                overflowY: 'auto',
                 border: '1px solid var(--hairline)',
                 borderRadius: '8px',
                 background: 'var(--bg-panel)',
@@ -524,27 +574,13 @@ export default function App() {
                   aoSelecionarPalavra={aoSelecionarPalavra}
                 />
               </div>
-              
-              {/* PAINEL DE PRESETS DE GRUPO */}
-              {idsSelecionados.length > 0 && modoEdicao === MODO_SELECAO && (
-                <div className="callout callout--blue" style={{ marginTop: '20px', flexShrink: 0 }}>
-                  <p style={{ margin: '0 0 10px' }}>
-                    {idsSelecionados.length} palavra(s) selecionada(s) — ajuste abaixo e aplique como preset de grupo.
-                  </p>
-                  <PainelPropriedades
-                    estilo={projeto.estiloPadrao}
-                    titulo="Aplicar a grupo selecionado"
-                    aoMudar={aplicarPresetAoGrupo}
-                  />
-                </div>
-              )}
             </div>
 
           </div>
 
           {/* PAINEL INFERIOR TIPO VS CODE */}
           {mostrarSincronizacao && (
-            <div 
+            <div
               style={{
                 height: alturaPainelFerramentas,
                 flexShrink: 0,
@@ -557,7 +593,7 @@ export default function App() {
                 boxShadow: '0 -4px 12px rgba(0,0,0,0.1)'
               }}
             >
-              <div 
+              <div
                 onMouseDown={() => setEstaArrastandoPainel(true)}
                 style={{
                   height: '8px',
@@ -573,7 +609,7 @@ export default function App() {
               >
                 <div style={{ width: '40px', height: '4px', background: 'rgba(239, 159, 39, 0.5)', borderRadius: '4px' }} />
               </div>
-              
+
               <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
                 <PainelSincronizacaoAudio
                   caminhoAudio={projeto.caminhoVideo}
@@ -589,17 +625,17 @@ export default function App() {
         </div>
 
         {/* COLUNA DIREITA (RAIL) */}
-        <div style={{ 
-          width: '340px', 
-          flexShrink: 0, 
-          display: 'flex', 
-          flexDirection: 'column', 
+        <div style={{
+          width: '340px',
+          flexShrink: 0,
+          display: 'flex',
+          flexDirection: 'column',
           gap: '20px',
           minHeight: 0, /* Substitui height: 100% */
           overflowY: 'auto',
-          paddingRight: '10px' 
+          paddingRight: '10px'
         }}>
-          
+
           <div className="segmented">
             <button
               className={`btn ${modoEdicao === MODO_GLOBAL ? 'is-active' : ''}`}
@@ -625,24 +661,21 @@ export default function App() {
 
           {modoEdicao === MODO_SELECAO && !haSelecao && (
             <div className="hint-box">
-              Clique em uma palavra na lista à esquerda (ou shift+clique
+              Clique em uma palavra na lista à esquerda (ou ctrl+clique
               para um grupo) para editar seu estilo individual.
             </div>
           )}
 
-          {modoEdicao === MODO_SELECAO && palavraSelecionada && idsSelecionados.length === 0 && (
+          {modoEdicao === MODO_SELECAO && palavraSelecionada && (
             <PainelPropriedades
               estilo={estiloEmEdicao}
-              titulo={`Palavra: "${palavraSelecionada.texto}"`}
+              // O título muda de forma inteligente consoante o número de palavras selecionadas
+              titulo={idsSelecionados.length > 1
+                ? `Múltiplas palavras (${idsSelecionados.length})`
+                : `Palavra: "${palavraSelecionada.texto}"`}
               aoMudar={(parcial) => atualizarEstiloPalavra(palavraSelecionada.id, parcial)}
               aoLimparOverride={() => limparOverride(palavraSelecionada.id)}
             />
-          )}
-
-          {modoEdicao === MODO_SELECAO && idsSelecionados.length > 0 && (
-            <div className="hint-box">
-              Use o painel abaixo da lista de palavras para aplicar o estilo ao grupo selecionado.
-            </div>
           )}
 
           <hr className="divider" style={{ margin: '10px 0', borderTop: '1px solid var(--hairline)' }} />
@@ -650,7 +683,7 @@ export default function App() {
           <PainelExportacao projetoId={projetoId} />
         </div>
       </div>
-      
+
       {estaArrastandoPainel && (
         <div style={{
           position: 'fixed',

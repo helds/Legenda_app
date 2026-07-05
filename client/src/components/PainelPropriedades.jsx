@@ -209,6 +209,40 @@ export function PainelPropriedades({ estilo = {}, aoMudar, titulo, aoLimparOverr
         </div>
       </div>
 
+        <div style={{ display: 'flex', gap: 14, marginTop: '14px' }}>
+          <div className="field" style={{ flex: 1 }}>
+            <label className="field-label">Largura Máx. <span className="field-label__value">{estilo.larguraContainer ?? 92}%</span></label>
+            <input type="range" min="10" max="100" step="1" value={estilo.larguraContainer ?? 92} onChange={(e) => atualizar('larguraContainer', Number(e.target.value))} />
+          </div>
+          <div className="field" style={{ flex: 1 }}>
+            <label className="field-label">Altura Máx. <span className="field-label__value">{estilo.alturaContainer ? `${estilo.alturaContainer}%` : 'Auto'}</span></label>
+            <input type="range" min="0" max="100" step="1" value={estilo.alturaContainer ?? 0} onChange={(e) => atualizar('alturaContainer', Number(e.target.value))} />
+          </div>
+        </div>
+
+        {/* NOVAS FERRAMENTAS DE ESPAÇAMENTO E MARGENS */}
+        <div style={{ display: 'flex', gap: 14, marginTop: '14px' }}>
+          <div className="field" style={{ flex: 1 }}>
+            <label className="field-label">Espaç. Linhas <span className="field-label__value">{estilo.espacamentoLinhas ?? 1.2}</span></label>
+            <input type="range" min="0.8" max="2.5" step="0.05" value={estilo.espacamentoLinhas ?? 1.2} onChange={(e) => atualizar('espacamentoLinhas', Number(e.target.value))} />
+          </div>
+          <div className="field" style={{ flex: 1 }}>
+            <label className="field-label">Espaç. Palavras <span className="field-label__value">{estilo.espacamentoPalavras ?? 0.4}em</span></label>
+            <input type="range" min="0" max="1.5" step="0.05" value={estilo.espacamentoPalavras ?? 0.4} onChange={(e) => atualizar('espacamentoPalavras', Number(e.target.value))} />
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 14, marginTop: '14px' }}>
+          <div className="field" style={{ flex: 1 }}>
+            <label className="field-label">Margem Cima <span className="field-label__value">{estilo.margemCima ?? 0}px</span></label>
+            <input type="range" min="-200" max="200" step="2" value={estilo.margemCima ?? 0} onChange={(e) => atualizar('margemCima', Number(e.target.value))} />
+          </div>
+          <div className="field" style={{ flex: 1 }}>
+            <label className="field-label">Margem Baixo <span className="field-label__value">{estilo.margemBaixo ?? 0}px</span></label>
+            <input type="range" min="-200" max="200" step="2" value={estilo.margemBaixo ?? 0} onChange={(e) => atualizar('margemBaixo', Number(e.target.value))} />
+          </div>
+        </div>
+
       <div className="panel" style={{ gap: 14 }}>
         <label className="checkbox-row" style={{ fontWeight: 600, textTransform: 'uppercase', fontSize: 11.5, letterSpacing: '0.04em', color: 'var(--text-secondary)' }}>
           <input

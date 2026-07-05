@@ -23,7 +23,7 @@ export function ListaPalavras({ blocos, palavraSelecionadaId, idsSelecionados, a
               return (
                 <button
                   key={palavra.id}
-                  onClick={(e) => aoSelecionarPalavra(palavra.id, e.shiftKey)}
+                  onClick={(e) => aoSelecionarPalavra(palavra.id, e.ctrlKey)}
                   className={classes.join(' ')}
                   title={temOverride ? 'Tem estilo customizado' : 'Usando estilo padrão'}
                 >

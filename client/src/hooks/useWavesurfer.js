@@ -55,6 +55,22 @@ export function useWavesurfer({
       setPronto(true);
       setCarregando(false);
       setDuracaoSegundos(instancia.getDuration());
+
+      // CORREÇÃO (áudio duplicado): o WaveSurfer aqui é usado só como
+      // representação VISUAL da forma de onda — o áudio que de fato
+      // deve ser ouvido é o embutido no <video>/Remotion Player, que já
+      // toca em sincronia com a imagem. Sem mutar o WaveSurfer, ligar o
+      // play tocaria DUAS fontes de áudio ao mesmo tempo (a do vídeo e a
+      // decodificada aqui), sobrepostas. O WaveSurfer nunca chama
+      // play()/pause() por conta própria neste fluxo (ver
+      // TelaTimeline.jsx) — ele só é reposicionado via seekTo() a cada
+      // frame do player real — mas mutamos aqui como garantia extra,
+      // caso algum código futuro chame play() nele.
+      try {
+        instancia.setMuted(true);
+      } catch (err) {
+        console.warn('Falha ao mutar o WaveSurfer:', err);
+      }
     });
 
     instancia.on('error', (err) => {
@@ -96,8 +112,6 @@ export function useWavesurfer({
     }
   }, [pxPorSegundo, pronto]);
 
-  // AQUI FOI REMOVIDO O useEffect QUE FAZIA instancia.setMuted(true)
-
   function seekTo(segundos) {
     const instancia = wavesurferRef.current;
     if (!instancia || !pronto || !duracaoSegundos) return;
@@ -105,13 +119,17 @@ export function useWavesurfer({
     instancia.seekTo(fracao);
   }
 
-  return { 
-    pronto, 
-    carregando, 
-    erro, 
-    duracaoSegundos, 
+  return {
+    pronto,
+    carregando,
+    erro,
+    duracaoSegundos,
     seekTo,
+    // NOTA: play/pause do WaveSurfer permanecem expostos por
+    // compatibilidade, mas TelaTimeline.jsx não deve mais chamá-los —
+    // o Remotion Player é a única fonte de verdade de play/pause e de
+    // tempo. Ver comentários em TelaTimeline.jsx.
     play: () => wavesurferRef.current?.play(),
-    pause: () => wavesurferRef.current?.pause()
+    pause: () => wavesurferRef.current?.pause(),
   };
 }

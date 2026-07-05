@@ -60,6 +60,14 @@ function coletarPalavras(blocos) {
   );
 }
 
+// CORREÇÃO (sincronia vídeo/áudio): antes este hook chamava
+// `aoAlternarPlayPause` (que apenas invertia o estado local
+// `tocandoLocal`) e navegava o tempo escrevendo direto num ref próprio.
+// Agora `aoAlternarPlayPause` e `aoBuscarTempo` vêm de fora (App.jsx) e
+// agem diretamente sobre o Remotion Player — que é a ÚNICA fonte de
+// verdade de tempo/play. Os atalhos de teclado continuam funcionando
+// exatamente igual para o usuário, só que agora comandam o player real
+// em vez de um clock paralelo.
 function useAtalhosDeTeclado({
   aoAlternarPlayPause,
   aoBuscarTempo,
@@ -131,6 +139,14 @@ export function TelaTimeline({
   urlAudio,
   duracaoSegundos,
   tempoAtualSegundos = 0,
+  // CORREÇÃO (sincronia vídeo/áudio): `estaTocando` e `aoAlternarPlayPause`
+  // agora vêm do App.jsx, onde já existem ligados de verdade ao Remotion
+  // Player (playerRef.current.play()/.pause(), e aos eventos
+  // play/pause/ended do próprio player). Isso substitui o antigo estado
+  // local `tocandoLocal`, que só dava play/pause no WaveSurfer e nunca
+  // no vídeo — motivo pelo qual o vídeo não acompanhava o áudio.
+  estaTocando = false,
+  aoAlternarPlayPause,
   aoBuscarTempo,
   palavraSelecionadaId,
   idsSelecionados,
@@ -141,8 +157,6 @@ export function TelaTimeline({
 }) {
   const [zoom, setZoom] = useState(1);
   const [seguirPlayhead, setSeguirPlayhead] = useState(true);
-  
-  const [tocandoLocal, setTocandoLocal] = useState(false);
 
   const containerScrollRef = useRef(null);
   const faixaRef = useRef(null);
@@ -152,21 +166,20 @@ export function TelaTimeline({
   const pointerIdAgulhaRef = useRef(null);
   const resizeAtivoRef = useRef(null);
 
-  // ADIÇÃO: Controla os scrolls feitos automaticamente pelo código
+  // Controla os scrolls feitos automaticamente pelo código (autoscroll ao
+  // seguir o playhead), para não confundir com scroll manual do usuário.
   const ignorarScroll = useRef(false);
   const timeoutScroll = useRef(null);
 
   const pxPorSegundo = PX_POR_SEGUNDO_BASE * zoom;
 
   const wavesurferContainerRef = useRef(null);
-  const { 
-    pronto: temWaveformReal, 
-    carregando, 
-    erro, 
-    duracaoSegundos: duracaoAudioDecodificado, 
+  const {
+    pronto: temWaveformReal,
+    carregando,
+    erro,
+    duracaoSegundos: duracaoAudioDecodificado,
     seekTo: atualizarProgressoWavesurfer,
-    play: playWave,
-    pause: pauseWave,
   } = useWavesurfer({
     containerRef: wavesurferContainerRef,
     url: urlAudio,
@@ -174,7 +187,7 @@ export function TelaTimeline({
     corOnda: COR_WAVE,
     corProgresso: COR_AMBAR,
     altura: ALTURA_ONDA,
-    onSeek: aoBuscarTempo
+    onSeek: aoBuscarTempo,
   });
 
   const duracao = Math.max(1, limitarNumero(duracaoSegundos || duracaoAudioDecodificado, 1));
@@ -201,131 +214,66 @@ export function TelaTimeline({
   const tempoAtualSegundosRef = useRef(tempoAtualSegundos);
   const duracaoRef = useRef(duracao);
   duracaoRef.current = duracao;
-  
-  const tocandoLocalRef = useRef(false);
-  tocandoLocalRef.current = tocandoLocal;
 
   useAtalhosDeTeclado({
-    aoAlternarPlayPause: () => setTocandoLocal((prev) => !prev),
+    aoAlternarPlayPause,
     aoBuscarTempo,
     tempoAtualSegundosRef,
     duracaoRef,
     setZoom,
   });
 
+  // CORREÇÃO (agulha não acompanhava o play): este efeito cuida do
+  // autoscroll e do seekTo do WaveSurfer. A posição da agulha e o texto
+  // do contador NÃO são mais escritos aqui via DOM direto — eles já são
+  // controlados pelo JSX abaixo (`left: posicaoPlayheadPx` e
+  // `{formatarTempo(tempoAtualSegundos)}`), que reage a `tempoAtualSegundos`
+  // via render normal do React. Antes este efeito também fazia
+  // `agulha.style.left = ...` e `contador.innerText = ...` manualmente —
+  // isso duplicava a fonte de verdade da posição (React de um lado,
+  // manipulação direta de DOM do outro) e podia deixar a agulha um passo
+  // atrás do valor real durante a reprodução, dependendo da ordem de
+  // commit dos efeitos. Mantendo só o JSX como fonte de verdade, a
+  // agulha e o contador sempre refletem exatamente `tempoAtualSegundos`.
   useEffect(() => {
-    if (!temWaveformReal) return;
-    if (tocandoLocal) {
-      playWave?.();
-    } else {
-      pauseWave?.();
+    tempoAtualSegundosRef.current = tempoAtualSegundos;
+
+    const posicaoPx = tempoAtualSegundos * pxPorSegundo;
+
+    if (temWaveformReal && atualizarProgressoWavesurfer) {
+      atualizarProgressoWavesurfer(tempoAtualSegundos);
     }
-  }, [tocandoLocal, temWaveformReal, playWave, pauseWave]);
 
-  useEffect(() => {
-    if (!tocandoLocal) {
-      tempoAtualSegundosRef.current = tempoAtualSegundos;
-      const posicaoPx = tempoAtualSegundos * pxPorSegundo;
-      const agulha = document.getElementById('agulha-playhead');
-      if (agulha) agulha.style.left = `${posicaoPx}px`;
-      
-      const contador = document.getElementById('contador-tempo');
-      if (contador) contador.innerText = `${formatarTempo(tempoAtualSegundos)} / ${formatarTempo(duracaoRef.current)}`;
+    if (seguirPlayhead && !arrastandoAgulhaRef.current) {
+      const scrollContainer = containerScrollRef.current;
+      if (scrollContainer) {
+        const margem = 120;
+        const dentroDaVista =
+          posicaoPx >= scrollContainer.scrollLeft + margem &&
+          posicaoPx <= scrollContainer.scrollLeft + scrollContainer.clientWidth - margem;
 
-      if (temWaveformReal && atualizarProgressoWavesurfer) {
-        atualizarProgressoWavesurfer(tempoAtualSegundos);
-      }
-    }
-  }, [tempoAtualSegundos, tocandoLocal, pxPorSegundo, temWaveformReal, atualizarProgressoWavesurfer]);
+        if (!dentroDaVista) {
+          // AVISAMOS QUE O SCROLL É AUTOMÁTICO
+          ignorarScroll.current = true;
+          scrollContainer.scrollTo({
+            left: Math.max(0, posicaoPx - scrollContainer.clientWidth / 2),
+            behavior: estaTocando ? 'auto' : 'smooth',
+          });
 
-  useEffect(() => {
-    if (!tocandoLocal) return;
-
-    let animId;
-    let ultimoFrame = performance.now();
-
-    const loopLocal = (tempoAgoraMs) => {
-      const deltaSegundos = (tempoAgoraMs - ultimoFrame) / 1000;
-      ultimoFrame = tempoAgoraMs;
-
-      let novoTempo = tempoAtualSegundosRef.current + deltaSegundos;
-
-      if (novoTempo >= duracaoRef.current) {
-        novoTempo = duracaoRef.current;
-        setTocandoLocal(false);
-      }
-
-      tempoAtualSegundosRef.current = novoTempo;
-      const posicaoRealPx = novoTempo * pxPorSegundo;
-
-      const agulha = document.getElementById('agulha-playhead');
-      if (agulha) agulha.style.left = `${posicaoRealPx}px`;
-
-      const contador = document.getElementById('contador-tempo');
-      if (contador) contador.innerText = `${formatarTempo(novoTempo)} / ${formatarTempo(duracaoRef.current)}`;
-
-      if (seguirPlayhead && !arrastandoAgulhaRef.current) {
-        const scrollContainer = containerScrollRef.current;
-        if (scrollContainer) {
-          const margem = 120;
-          const dentroDaVista =
-            posicaoRealPx >= scrollContainer.scrollLeft + margem &&
-            posicaoRealPx <= scrollContainer.scrollLeft + scrollContainer.clientWidth - margem;
-
-          if (!dentroDaVista) {
-            // AVISAMOS QUE O SCROLL É AUTOMÁTICO
-            ignorarScroll.current = true;
-            scrollContainer.scrollTo({
-              left: Math.max(0, posicaoRealPx - scrollContainer.clientWidth / 2),
-              behavior: 'auto'
-            });
-            
-            // Retiramos o aviso rapidamente
-            if (timeoutScroll.current) clearTimeout(timeoutScroll.current);
-            timeoutScroll.current = setTimeout(() => {
-              ignorarScroll.current = false;
-            }, 100);
-          }
+          if (timeoutScroll.current) clearTimeout(timeoutScroll.current);
+          timeoutScroll.current = setTimeout(() => {
+            ignorarScroll.current = false;
+          }, estaTocando ? 100 : 600);
         }
       }
-
-      if (tocandoLocalRef.current && novoTempo < duracaoRef.current) {
-        animId = requestAnimationFrame(loopLocal);
-      }
-    };
-
-    animId = requestAnimationFrame(loopLocal);
-    return () => cancelAnimationFrame(animId);
-  }, [tocandoLocal, pxPorSegundo, seguirPlayhead]);
-
-  useEffect(() => {
-    if (!seguirPlayhead) return;
-    if (arrastandoAgulhaRef.current) return; 
-    const container = containerScrollRef.current;
-    if (!container) return;
-
-    const margem = 120;
-    const dentroDaVista =
-      posicaoPlayheadPx >= container.scrollLeft + margem &&
-      posicaoPlayheadPx <= container.scrollLeft + container.clientWidth - margem;
-
-    if (!dentroDaVista) {
-      // AVISAMOS QUE O SCROLL É AUTOMÁTICO
-      ignorarScroll.current = true;
-      container.scrollTo({ left: Math.max(0, posicaoPlayheadPx - container.clientWidth / 2), behavior: 'smooth' });
-      
-      if (timeoutScroll.current) clearTimeout(timeoutScroll.current);
-      timeoutScroll.current = setTimeout(() => {
-        ignorarScroll.current = false;
-      }, 600); // 600ms para dar tempo ao scroll "smooth"
     }
-  }, [posicaoPlayheadPx, seguirPlayhead]);
+  }, [tempoAtualSegundos, pxPorSegundo, temWaveformReal, atualizarProgressoWavesurfer, seguirPlayhead, estaTocando]);
 
   function aoRolarManualmente() {
     // SE FOR O CÓDIGO A ROLAR A BARRA, IGNORAR (NÃO DESLIGAR O BOTÃO)
-    if (ignorarScroll.current) return; 
-    
-    if (arrastandoAgulhaRef.current) return; 
+    if (ignorarScroll.current) return;
+
+    if (arrastandoAgulhaRef.current) return;
     setSeguirPlayhead(false);
   }
 
@@ -342,7 +290,7 @@ export function TelaTimeline({
   );
 
   function aoIniciarArrasteAgulha(evento) {
-    if (resizeAtivoRef.current) return; 
+    if (resizeAtivoRef.current) return;
     evento.currentTarget.setPointerCapture(evento.pointerId);
     pointerIdAgulhaRef.current = evento.pointerId;
     arrastandoAgulhaRef.current = true;
@@ -447,14 +395,14 @@ export function TelaTimeline({
 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 16 }}>
           <button
-            onClick={() => setTocandoLocal(!tocandoLocal)}
+            onClick={() => aoAlternarPlayPause?.()}
             style={{
               width: 36,
               height: 36,
               borderRadius: '50%',
-              border: `1px solid ${tocandoLocal ? COR_AMBAR : '#383b44'}`,
-              background: tocandoLocal ? COR_AMBAR : '#22242b',
-              color: tocandoLocal ? '#1a1400' : COR_TEXTO,
+              border: `1px solid ${estaTocando ? COR_AMBAR : '#383b44'}`,
+              background: estaTocando ? COR_AMBAR : '#22242b',
+              color: estaTocando ? '#1a1400' : COR_TEXTO,
               cursor: 'pointer',
               fontSize: 13,
               display: 'flex',
@@ -462,12 +410,12 @@ export function TelaTimeline({
               justifyContent: 'center',
               transition: 'all 120ms ease',
             }}
-            title={tocandoLocal ? 'Pausar (Espaço)' : 'Reproduzir (Espaço)'}
+            title={estaTocando ? 'Pausar (Espaço)' : 'Reproduzir (Espaço)'}
           >
-            {tocandoLocal ? '❚❚' : '▶'}
+            {estaTocando ? '❚❚' : '▶'}
           </button>
 
-          <span 
+          <span
             id="contador-tempo"
             style={{ fontSize: 13, color: COR_TEXTO_SEC, fontVariantNumeric: 'tabular-nums', fontFamily: 'var(--font-mono, monospace)' }}
           >
@@ -526,7 +474,7 @@ export function TelaTimeline({
       >
         <div
           ref={(node) => {
-            containerPlayerRef.current = node; 
+            containerPlayerRef.current = node;
             if (registrarSlotDoPlayer) registrarSlotDoPlayer(node);
           }}
           style={{
@@ -615,17 +563,17 @@ export function TelaTimeline({
             </div>
 
             <div style={{ position: 'relative', height: ALTURA_ONDA, borderBottom: `1px solid ${COR_HAIRLINE}`, background: '#131418' }}>
-              
+
               <div
                 ref={wavesurferContainerRef}
                 style={{
                   position: 'absolute',
-                  top: 0, 
-                  left: 0, 
-                  right: 0, 
+                  top: 0,
+                  left: 0,
+                  right: 0,
                   bottom: 0,
                   opacity: temWaveformReal ? 1 : 0,
-                  pointerEvents: 'none' 
+                  pointerEvents: 'none'
                 }}
               />
 
@@ -670,7 +618,7 @@ export function TelaTimeline({
                     title={`${palavra.texto} — ${inicio.toFixed(2)}s a ${fim.toFixed(2)}s`}
                     onClick={(evento) => {
                       evento.stopPropagation();
-                      aoSelecionarPalavra?.(palavra.id, evento.shiftKey);
+                      aoSelecionarPalavra?.(palavra.id, evento.ctrlKey);
                     }}
                     style={{
                       position: 'absolute',
