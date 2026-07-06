@@ -211,8 +211,8 @@ export function PainelPropriedades({ estilo = {}, aoMudar, titulo, aoLimparOverr
 
         <div style={{ display: 'flex', gap: 14, marginTop: '14px' }}>
           <div className="field" style={{ flex: 1 }}>
-            <label className="field-label">Largura Máx. <span className="field-label__value">{estilo.larguraContainer ?? 92}%</span></label>
-            <input type="range" min="10" max="100" step="1" value={estilo.larguraContainer ?? 92} onChange={(e) => atualizar('larguraContainer', Number(e.target.value))} />
+            <label className="field-label">Largura Máx. <span className="field-label__value">{estilo.larguraContainer ?? 45}%</span></label>
+            <input type="range" min="10" max="100" step="1" value={estilo.larguraContainer ?? 45} onChange={(e) => atualizar('larguraContainer', Number(e.target.value))} />
           </div>
           <div className="field" style={{ flex: 1 }}>
             <label className="field-label">Altura Máx. <span className="field-label__value">{estilo.alturaContainer ? `${estilo.alturaContainer}%` : 'Auto'}</span></label>

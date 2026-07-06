@@ -1,26 +1,19 @@
 function criarEstiloPadrao() {
   return {
-    fonte: 'Inter',
-    pesoFonte: 500, // espessura (font-weight)
-    italico: false, // usa a variante itálica da fonte, se disponível
-    fonteUrl: null, // URL do arquivo de fonte real registrado no servidor
-                     // (preenchido pelo painel ao trocar de fonte); usado
-                     // para gerar o @font-face que garante que preview e
-                     // vídeo exportado usem exatamente o mesmo arquivo
-    tamanhoBase: 42, // px, tamanho da palavra "inativa"
-    corBase: '#FFFFFF', // cor antes de ser destacada
-    corDestaque: '#EF9F27', // cor quando a palavra está "ativa"
-    escalaDestaque: 1.3, // multiplicador de tamanho no pico do destaque
-    offsetX: 0, // deslocamento horizontal no pico do destaque, px
-    offsetY: 0, // deslocamento vertical no pico do destaque, px
-    duracaoTransicaoMs: 120, // tempo de subida/descida da escala
-    posicaoY: 0.85, // posição vertical na tela, 0 = topo, 1 = base
-    // Unidade de revelação da animação de destaque dentro da palavra:
-    // 'palavra' = a palavra inteira acende de uma vez (sem sub-divisão);
-    // 'letra'   = cada letra acende individualmente, em sequência;
-    // 'silaba'  = cada sílaba acende individualmente, em sequência
-    //             (separação via shared/silabizador.js).
-    modoRevelacao: 'palavra',
+    fonte: 'Roboto Flex',
+    pesoFonte: 500,
+    italico: false,
+    fonteUrl: null,
+    tamanhoBase: 42,
+    corBase: '#FFFFFF',
+    corDestaque: '#EF9F27',
+    escalaDestaque: 1.3,
+    offsetX: 0,
+    offsetY: 0,
+    duracaoTransicaoMs: 120,
+    posicaoY: 0.85,
+    modoRevelacao: 'silaba',
+    
   };
 }
 

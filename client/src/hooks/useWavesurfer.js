@@ -10,10 +10,24 @@ export function useWavesurfer({
   corProgresso = '#ef9f27',
   altura = 96,
   onSeek,
+  // NOVO: se true, o WaveSurfer passa a ser a fonte real de áudio (usado
+  // pela TelaTimeline, que não tem mais o Remotion Player por perto).
+  // Quando false (padrão, usado pelo Editor), o WaveSurfer continua mudo
+  // e é só uma representação visual — o áudio real vem do Player.
+  mutado = true,
+  onPlay,
+  onPause,
+  onTempoAtualizado,
 }) {
   const wavesurferRef = useRef(null);
   const onSeekRef = useRef(onSeek);
   onSeekRef.current = onSeek;
+  const onPlayRef = useRef(onPlay);
+  onPlayRef.current = onPlay;
+  const onPauseRef = useRef(onPause);
+  onPauseRef.current = onPause;
+  const onTempoAtualizadoRef = useRef(onTempoAtualizado);
+  onTempoAtualizadoRef.current = onTempoAtualizado;
 
   const [pronto, setPronto] = useState(false);
   const [carregando, setCarregando] = useState(!!url);
@@ -56,20 +70,12 @@ export function useWavesurfer({
       setCarregando(false);
       setDuracaoSegundos(instancia.getDuration());
 
-      // CORREÇÃO (áudio duplicado): o WaveSurfer aqui é usado só como
-      // representação VISUAL da forma de onda — o áudio que de fato
-      // deve ser ouvido é o embutido no <video>/Remotion Player, que já
-      // toca em sincronia com a imagem. Sem mutar o WaveSurfer, ligar o
-      // play tocaria DUAS fontes de áudio ao mesmo tempo (a do vídeo e a
-      // decodificada aqui), sobrepostas. O WaveSurfer nunca chama
-      // play()/pause() por conta própria neste fluxo (ver
-      // TelaTimeline.jsx) — ele só é reposicionado via seekTo() a cada
-      // frame do player real — mas mutamos aqui como garantia extra,
-      // caso algum código futuro chame play() nele.
+      // Muta ou desmuta de acordo com o modo de uso deste hook nesta
+      // tela — ver comentário no parâmetro `mutado` acima.
       try {
-        instancia.setMuted(true);
+        instancia.setMuted(mutado);
       } catch (err) {
-        console.warn('Falha ao mutar o WaveSurfer:', err);
+        console.warn('Falha ao aplicar estado de mute do WaveSurfer:', err);
       }
     });
 
@@ -87,6 +93,15 @@ export function useWavesurfer({
       onSeekRef.current?.(novoTempoSegundos);
     });
 
+    // Eventos de tempo/play/pause só importam de verdade quando este
+    // hook está atuando como fonte real de áudio (mutado = false).
+    instancia.on('play', () => onPlayRef.current?.());
+    instancia.on('pause', () => onPauseRef.current?.());
+    instancia.on('finish', () => onPauseRef.current?.());
+    instancia.on('timeupdate', (tempoSegundos) => {
+      onTempoAtualizadoRef.current?.(tempoSegundos);
+    });
+
     instancia.load(url).catch((err) => {
       const errorMessage = String(err).toLowerCase();
       if (errorMessage.includes('aborted') || err?.name === 'AbortError') return;
@@ -100,7 +115,7 @@ export function useWavesurfer({
       instancia.destroy();
       wavesurferRef.current = null;
     };
-  }, [url, containerRef, pxPorSegundo, altura, corOnda, corProgresso]);
+  }, [url, containerRef, pxPorSegundo, altura, corOnda, corProgresso, mutado]);
 
   useEffect(() => {
     const instancia = wavesurferRef.current;
@@ -112,11 +127,40 @@ export function useWavesurfer({
     }
   }, [pxPorSegundo, pronto]);
 
+  useEffect(() => {
+    const instancia = wavesurferRef.current;
+    if (!instancia || !pronto) return;
+    try {
+      instancia.setMuted(mutado);
+    } catch (err) {
+      console.warn('Falha ao atualizar mute do WaveSurfer:', err);
+    }
+  }, [mutado, pronto]);
+
   function seekTo(segundos) {
     const instancia = wavesurferRef.current;
     if (!instancia || !pronto || !duracaoSegundos) return;
     const fracao = Math.max(0, Math.min(1, segundos / duracaoSegundos));
     instancia.seekTo(fracao);
+  }
+
+  function tocar() {
+    wavesurferRef.current?.play();
+  }
+
+  function pausar() {
+    wavesurferRef.current?.pause();
+  }
+
+  function alternarPlayPause() {
+    const instancia = wavesurferRef.current;
+    if (!instancia) return;
+    if (instancia.isPlaying()) instancia.pause();
+    else instancia.play();
+  }
+
+  function estaTocando() {
+    return !!wavesurferRef.current?.isPlaying();
   }
 
   return {
@@ -125,11 +169,9 @@ export function useWavesurfer({
     erro,
     duracaoSegundos,
     seekTo,
-    // NOTA: play/pause do WaveSurfer permanecem expostos por
-    // compatibilidade, mas TelaTimeline.jsx não deve mais chamá-los —
-    // o Remotion Player é a única fonte de verdade de play/pause e de
-    // tempo. Ver comentários em TelaTimeline.jsx.
-    play: () => wavesurferRef.current?.play(),
-    pause: () => wavesurferRef.current?.pause(),
+    play: tocar,
+    pause: pausar,
+    alternarPlayPause,
+    estaTocando,
   };
 }

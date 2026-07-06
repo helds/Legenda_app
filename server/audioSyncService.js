@@ -227,7 +227,7 @@ function adaptarAlignmentAoProjetoExistente(projeto, blocosAlinhados) {
     console.warn(
       `[audioSyncService] Quantidade de palavras diferente ao adaptar legenda existente: ` +
       `${palavrasOriginais.length} no projeto, ${palavrasAlinhadas.length} no alignment. ` +
-      `Serão ajustadas ${totalAjustavel} palavra(s) por ordem.`
+      `Serï¿½o ajustadas ${totalAjustavel} palavra(s) por ordem.`
     );
   }
 

@@ -5,3 +5,4 @@ exports/
 *.log
 .DS_Store
 client/dist/
+server/audio_sync/venv/

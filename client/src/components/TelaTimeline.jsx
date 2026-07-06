@@ -1,6 +1,7 @@
 // client/src/components/TelaTimeline.jsx
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useWavesurfer } from '../hooks/useWavesurfer';
+import { LegendaFlutuante } from './LegendaFlutuante';
 
 const PX_POR_SEGUNDO_BASE = 72;
 const ZOOM_MIN = 0.25;
@@ -8,10 +9,15 @@ const ZOOM_MAX = 8;
 const ALTURA_ONDA = 96;
 const ALTURA_REGUA = 34;
 const ALTURA_TRILHA_LEGENDA = 58;
+const ALTURA_LEGENDA_FLUTUANTE = 200;
 const LARGURA_ROTULO = 76;
 
 const DURACAO_MINIMA_PALAVRA = 0.08;
 const LARGURA_ALCA_PX = 8;
+const LARGURA_ALCA_JUNCAO_PX = 10;
+// Mesmo limiar usado no App.jsx para decidir se duas palavras vizinhas
+// estão "coladas" (habilitando a alça de junção estilo DaVinci Resolve).
+const LIMIAR_JUNCAO_SEGUNDOS = 0.02;
 
 const COR_FUNDO = '#101114';
 const COR_PAINEL = '#1c1e23';
@@ -60,14 +66,14 @@ function coletarPalavras(blocos) {
   );
 }
 
-// CORREÇÃO (sincronia vídeo/áudio): antes este hook chamava
-// `aoAlternarPlayPause` (que apenas invertia o estado local
-// `tocandoLocal`) e navegava o tempo escrevendo direto num ref próprio.
-// Agora `aoAlternarPlayPause` e `aoBuscarTempo` vêm de fora (App.jsx) e
-// agem diretamente sobre o Remotion Player — que é a ÚNICA fonte de
-// verdade de tempo/play. Os atalhos de teclado continuam funcionando
-// exatamente igual para o usuário, só que agora comandam o player real
-// em vez de um clock paralelo.
+// CORREÇÃO (Timeline sem vídeo/Player): a TelaTimeline não depende mais
+// do Remotion Player nem do App.jsx para tempo/play. O WaveSurfer,
+// instanciado logo abaixo com `mutado: false`, é agora a ÚNICA fonte de
+// verdade de tempo/play/áudio nesta tela — ele toca o áudio de verdade
+// (antes ficava mudo, pois o áudio vinha do <Video> dentro do Player).
+// `aoAlternarPlayPause` e `aoBuscarTempo` são funções locais definidas
+// mais abaixo que chamam os métodos do WaveSurfer. Os atalhos de
+// teclado continuam funcionando exatamente igual para o usuário.
 function useAtalhosDeTeclado({
   aoAlternarPlayPause,
   aoBuscarTempo,
@@ -138,33 +144,39 @@ export function TelaTimeline({
   projeto,
   urlAudio,
   duracaoSegundos,
-  tempoAtualSegundos = 0,
-  // CORREÇÃO (sincronia vídeo/áudio): `estaTocando` e `aoAlternarPlayPause`
-  // agora vêm do App.jsx, onde já existem ligados de verdade ao Remotion
-  // Player (playerRef.current.play()/.pause(), e aos eventos
-  // play/pause/ended do próprio player). Isso substitui o antigo estado
-  // local `tocandoLocal`, que só dava play/pause no WaveSurfer e nunca
-  // no vídeo — motivo pelo qual o vídeo não acompanhava o áudio.
-  estaTocando = false,
-  aoAlternarPlayPause,
-  aoBuscarTempo,
   palavraSelecionadaId,
   idsSelecionados,
   aoSelecionarPalavra,
   aoVoltarParaEditor,
-  registrarSlotDoPlayer,
   aoRedimensionarPalavra,
+  aoRedimensionarJuncao,
+  aoMoverPalavra,
+  aoFinalizarMoverPalavra,
 }) {
   const [zoom, setZoom] = useState(1);
   const [seguirPlayhead, setSeguirPlayhead] = useState(true);
 
+  // CORREÇÃO (Timeline sem vídeo/Player): tempo e play/pause nascem
+  // AQUI, a partir do WaveSurfer — não vêm mais do App/Remotion Player.
+  // Isso é intencional: nesta tela o WaveSurfer é a única fonte de
+  // áudio (ver `mutado: false` logo abaixo).
+  const [tempoAtualSegundos, setTempoAtualSegundos] = useState(0);
+  const [estaTocando, setEstaTocando] = useState(false);
+
   const containerScrollRef = useRef(null);
   const faixaRef = useRef(null);
-  const containerPlayerRef = useRef(null);
 
   const arrastandoAgulhaRef = useRef(false);
   const pointerIdAgulhaRef = useRef(null);
   const resizeAtivoRef = useRef(null);
+  const resizeJuncaoAtivoRef = useRef(null);
+  const moverAtivoRef = useRef(null);
+  // Estado visual (nao vem do projeto) so para a palavra sendo arrastada,
+  // atualizado a cada pointermove; o valor definitivo eh sempre recalculado
+  // a partir do que ja esta no estado do componente pai - este estado so
+  // existe para o preview fluido de arraste sem esperar o round-trip do
+  // estado do React.
+  const [arrastoVisual, setArrastoVisual] = useState(null); // { palavraId, inicio, fim }
 
   // Controla os scrolls feitos automaticamente pelo código (autoscroll ao
   // seguir o playhead), para não confundir com scroll manual do usuário.
@@ -173,6 +185,14 @@ export function TelaTimeline({
 
   const pxPorSegundo = PX_POR_SEGUNDO_BASE * zoom;
 
+  // Ref estável para `aoBuscarTempo`, usado dentro do callback `onSeek`
+  // passado ao useWavesurfer logo abaixo. Como `aoBuscarTempo` só é
+  // definida via useCallback depois (pois depende de
+  // `atualizarProgressoWavesurfer`, retornado pelo próprio hook), usamos
+  // um ref para quebrar essa dependência circular sem arriscar closures
+  // desatualizadas.
+  const aoBuscarTempoRef = useRef(null);
+
   const wavesurferContainerRef = useRef(null);
   const {
     pronto: temWaveformReal,
@@ -180,6 +200,7 @@ export function TelaTimeline({
     erro,
     duracaoSegundos: duracaoAudioDecodificado,
     seekTo: atualizarProgressoWavesurfer,
+    alternarPlayPause: alternarPlayPauseWavesurfer,
   } = useWavesurfer({
     containerRef: wavesurferContainerRef,
     url: urlAudio,
@@ -187,13 +208,61 @@ export function TelaTimeline({
     corOnda: COR_WAVE,
     corProgresso: COR_AMBAR,
     altura: ALTURA_ONDA,
-    onSeek: aoBuscarTempo,
+    onSeek: (segundos) => aoBuscarTempoRef.current?.(segundos),
+    // A Timeline não mostra mais vídeo — o áudio real sai daqui, então
+    // o WaveSurfer deixa de ficar mudo.
+    mutado: false,
+    onPlay: () => setEstaTocando(true),
+    onPause: () => setEstaTocando(false),
+    onTempoAtualizado: (segundos) => setTempoAtualSegundos(segundos),
   });
+
+  const aoBuscarTempo = useCallback(
+    (segundos) => {
+      setTempoAtualSegundos(segundos);
+      atualizarProgressoWavesurfer?.(segundos);
+    },
+    [atualizarProgressoWavesurfer]
+  );
+  aoBuscarTempoRef.current = aoBuscarTempo;
+
+  const aoAlternarPlayPause = useCallback(() => {
+    alternarPlayPauseWavesurfer?.();
+  }, [alternarPlayPauseWavesurfer]);
 
   const duracao = Math.max(1, limitarNumero(duracaoSegundos || duracaoAudioDecodificado, 1));
   const larguraTotal = Math.max(800, Math.ceil(duracao * pxPorSegundo));
 
   const palavras = useMemo(() => coletarPalavras(projeto?.blocos), [projeto]);
+
+  // Para cada palavra, identifica se há uma vizinha colada imediatamente à
+  // direita (gap <= LIMIAR_JUNCAO_SEGUNDOS). Quando há, a fronteira entre
+  // as duas ganha uma alça de JUNÇÃO (redimensiona as duas ao mesmo tempo,
+  // estilo DaVinci Resolve); quando não há, a borda direita da própria
+  // palavra funciona como resize individual e livre.
+  const juncoesPorPalavraId = useMemo(() => {
+    const mapa = new Map();
+    const ordenadas = [...palavras].sort((a, b) => limitarNumero(a.inicio) - limitarNumero(b.inicio));
+    for (let i = 0; i < ordenadas.length - 1; i++) {
+      const atual = ordenadas[i];
+      const proxima = ordenadas[i + 1];
+      const gap = limitarNumero(proxima.inicio) - limitarNumero(atual.fim);
+      if (gap <= LIMIAR_JUNCAO_SEGUNDOS) {
+        mapa.set(atual.id, proxima.id);
+      }
+    }
+    return mapa;
+  }, [palavras]);
+
+  // Mapa reverso: dado o id de uma palavra, diz se ela é a "da direita" em
+  // alguma junção (ou seja, tem uma vizinha colada imediatamente à
+  // esquerda). Usado para não desenhar a alça individual esquerda quando
+  // essa fronteira já é coberta pela alça de junção compartilhada.
+  const idsComJuncaoNaEsquerda = useMemo(() => {
+    return new Set(juncoesPorPalavraId.values());
+  }, [juncoesPorPalavraId]);
+
+
   const marcadores = useMemo(
     () => criarMarcadoresTempo(duracao, pxPorSegundo),
     [duracao, pxPorSegundo]
@@ -223,26 +292,25 @@ export function TelaTimeline({
     setZoom,
   });
 
-  // CORREÇÃO (agulha não acompanhava o play): este efeito cuida do
-  // autoscroll e do seekTo do WaveSurfer. A posição da agulha e o texto
-  // do contador NÃO são mais escritos aqui via DOM direto — eles já são
-  // controlados pelo JSX abaixo (`left: posicaoPlayheadPx` e
-  // `{formatarTempo(tempoAtualSegundos)}`), que reage a `tempoAtualSegundos`
-  // via render normal do React. Antes este efeito também fazia
-  // `agulha.style.left = ...` e `contador.innerText = ...` manualmente —
-  // isso duplicava a fonte de verdade da posição (React de um lado,
-  // manipulação direta de DOM do outro) e podia deixar a agulha um passo
-  // atrás do valor real durante a reprodução, dependendo da ordem de
-  // commit dos efeitos. Mantendo só o JSX como fonte de verdade, a
-  // agulha e o contador sempre refletem exatamente `tempoAtualSegundos`.
+  // CORREÇÃO (Timeline sem vídeo/Player): este efeito agora cuida só do
+  // autoscroll. Não chamamos mais `atualizarProgressoWavesurfer` (seekTo)
+  // aqui a cada mudança de `tempoAtualSegundos` — durante a reprodução
+  // normal é o PRÓPRIO WaveSurfer quem gera esse valor via evento
+  // `timeupdate` (ver `onTempoAtualizado` passado ao useWavesurfer). Se
+  // chamássemos seekTo aqui também, cada frame de reprodução brigaria
+  // com a posição real de playback do WaveSurfer, travando o áudio. O
+  // seekTo só é chamado explicitamente dentro de `aoBuscarTempo`, usado
+  // pelos controles manuais (arrastar agulha, clicar na régua, atalhos
+  // de teclado) — nunca durante o timeupdate automático.
+  //
+  // A posição da agulha e o texto do contador continuam vindo só do
+  // JSX abaixo (`left: posicaoPlayheadPx` e
+  // `{formatarTempo(tempoAtualSegundos)}`), que reage a
+  // `tempoAtualSegundos` via render normal do React.
   useEffect(() => {
     tempoAtualSegundosRef.current = tempoAtualSegundos;
 
     const posicaoPx = tempoAtualSegundos * pxPorSegundo;
-
-    if (temWaveformReal && atualizarProgressoWavesurfer) {
-      atualizarProgressoWavesurfer(tempoAtualSegundos);
-    }
 
     if (seguirPlayhead && !arrastandoAgulhaRef.current) {
       const scrollContainer = containerScrollRef.current;
@@ -267,7 +335,7 @@ export function TelaTimeline({
         }
       }
     }
-  }, [tempoAtualSegundos, pxPorSegundo, temWaveformReal, atualizarProgressoWavesurfer, seguirPlayhead, estaTocando]);
+  }, [tempoAtualSegundos, pxPorSegundo, seguirPlayhead, estaTocando]);
 
   function aoRolarManualmente() {
     // SE FOR O CÓDIGO A ROLAR A BARRA, IGNORAR (NÃO DESLIGAR O BOTÃO)
@@ -349,6 +417,105 @@ export function TelaTimeline({
       } catch { }
     }
     resizeAtivoRef.current = null;
+  }
+
+  // Alça de JUNÇÃO: fica na fronteira entre duas palavras coladas. Arrastar
+  // move o fim da palavra da esquerda e o início da da direita ao mesmo
+  // tempo (como no editor de junções do DaVinci Resolve). Só existe quando
+  // as duas palavras estão de fato encostadas — ver juncoesPorPalavraId.
+  function iniciarResizeJuncao(evento, palavraEsquerdaId, palavraDireitaId) {
+    evento.stopPropagation();
+    evento.currentTarget.setPointerCapture(evento.pointerId);
+    resizeJuncaoAtivoRef.current = {
+      palavraEsquerdaId,
+      palavraDireitaId,
+      pointerId: evento.pointerId,
+    };
+  }
+
+  function moverResizeJuncao(evento) {
+    const ativo = resizeJuncaoAtivoRef.current;
+    if (!ativo || ativo.pointerId !== evento.pointerId) return;
+    if (!aoRedimensionarJuncao) return;
+
+    const tempo = tempoAPartirDoEventoNaFaixa(evento.clientX);
+    aoRedimensionarJuncao({
+      palavraEsquerdaId: ativo.palavraEsquerdaId,
+      palavraDireitaId: ativo.palavraDireitaId,
+      novoTempo: tempo,
+      duracaoMinima: DURACAO_MINIMA_PALAVRA,
+    });
+  }
+
+  function finalizarResizeJuncao(evento) {
+    const ativo = resizeJuncaoAtivoRef.current;
+    if (ativo && ativo.pointerId === evento.pointerId) {
+      try {
+        evento.currentTarget.releasePointerCapture(evento.pointerId);
+      } catch { }
+    }
+    resizeJuncaoAtivoRef.current = null;
+  }
+
+  // Arrastar pelo CENTRO do bloco: move a palavra inteira (mantendo sua
+  // duração) para qualquer posição livre da timeline. Diferente das alças
+  // de borda (resize com ripple), aqui não há vínculo com as vizinhas — ao
+  // soltar, se o novo intervalo cair em cima de outra(s) palavra(s), a área
+  // coberta é recortada delas (ver aplicarMoverPalavraComCorte no App.jsx).
+  function iniciarMover(evento, palavra) {
+    evento.stopPropagation();
+    evento.currentTarget.setPointerCapture(evento.pointerId);
+    const duracaoPalavra = Math.max(
+      DURACAO_MINIMA_PALAVRA,
+      limitarNumero(palavra.fim, 0) - limitarNumero(palavra.inicio, 0)
+    );
+    moverAtivoRef.current = {
+      palavraId: palavra.id,
+      pointerId: evento.pointerId,
+      duracaoPalavra,
+      // deslocamento entre o ponto do clique e o início do bloco, para que
+      // o bloco não "salte" para debaixo do cursor ao começar o arraste.
+      deslocamentoInicialPx:
+        evento.clientX - faixaRef.current.getBoundingClientRect().left - palavra.inicio * pxPorSegundo,
+    };
+    setArrastoVisual({ palavraId: palavra.id, inicio: palavra.inicio, fim: palavra.fim });
+  }
+
+  function moverMover(evento) {
+    const ativo = moverAtivoRef.current;
+    if (!ativo || ativo.pointerId !== evento.pointerId) return;
+    const faixa = faixaRef.current;
+    if (!faixa) return;
+
+    const rect = faixa.getBoundingClientRect();
+    const xRelativo = evento.clientX - rect.left - ativo.deslocamentoInicialPx;
+    const novoInicioBruto = xRelativo / pxPorSegundo;
+    const novoInicio = Math.max(0, Math.min(duracao - ativo.duracaoPalavra, novoInicioBruto));
+    const novoFim = novoInicio + ativo.duracaoPalavra;
+
+    setArrastoVisual({ palavraId: ativo.palavraId, inicio: novoInicio, fim: novoFim });
+  }
+
+  function finalizarMover(evento) {
+    const ativo = moverAtivoRef.current;
+    if (!ativo || ativo.pointerId !== evento.pointerId) return;
+
+    try {
+      evento.currentTarget.releasePointerCapture(evento.pointerId);
+    } catch { }
+
+    if (arrastoVisual && arrastoVisual.palavraId === ativo.palavraId) {
+      aoMoverPalavra?.({
+        palavraId: ativo.palavraId,
+        novoInicio: arrastoVisual.inicio,
+        novoFim: arrastoVisual.fim,
+        duracaoMinima: DURACAO_MINIMA_PALAVRA,
+      });
+      aoFinalizarMoverPalavra?.();
+    }
+
+    moverAtivoRef.current = null;
+    setArrastoVisual(null);
   }
 
   return (
@@ -463,31 +630,13 @@ export function TelaTimeline({
         </div>
       )}
 
-      <div
-        style={{
-          padding: '16px 20px',
-          borderBottom: `1px solid ${COR_HAIRLINE}`,
-          background: COR_FUNDO,
-          display: 'flex',
-          justifyContent: 'center',
-        }}
-      >
-        <div
-          ref={(node) => {
-            containerPlayerRef.current = node;
-            if (registrarSlotDoPlayer) registrarSlotDoPlayer(node);
-          }}
-          style={{
-            width: '100%',
-            maxWidth: 720,
-            aspectRatio: '16 / 9',
-            borderRadius: 10,
-            overflow: 'hidden',
-            background: '#000',
-            border: `1px solid ${COR_HAIRLINE}`,
-          }}
-        />
-      </div>
+      <LegendaFlutuante
+        projeto={projeto}
+        tempoAtualSegundos={tempoAtualSegundos}
+        palavraSelecionadaId={palavraSelecionadaId}
+        idsSelecionados={idsSelecionados}
+        altura={ALTURA_LEGENDA_FLUTUANTE}
+      />
 
       <div
         ref={containerScrollRef}
@@ -605,12 +754,27 @@ export function TelaTimeline({
               style={{ position: 'relative', height: ALTURA_TRILHA_LEGENDA, background: '#16171b' }}
             >
               {palavras.map((palavra) => {
-                const inicio = Math.max(0, limitarNumero(palavra.inicio));
-                const fim = Math.max(inicio + 0.04, limitarNumero(palavra.fim, inicio + 0.04));
+                const emArraste = arrastoVisual?.palavraId === palavra.id;
+                const inicio = emArraste
+                  ? arrastoVisual.inicio
+                  : Math.max(0, limitarNumero(palavra.inicio));
+                const fim = emArraste
+                  ? arrastoVisual.fim
+                  : Math.max(inicio + 0.04, limitarNumero(palavra.fim, inicio + 0.04));
                 const esquerda = inicio * pxPorSegundo;
                 const largura = Math.max(20, (fim - inicio) * pxPorSegundo);
                 const selecionada = palavra.id === palavraSelecionadaId;
                 const emGrupo = idsSelecionados?.includes(palavra.id);
+
+                // Se esta palavra tem uma vizinha colada à direita, a
+                // borda direita dela NÃO é resize individual — vira parte
+                // da alça de junção compartilhada (desenhada separadamente
+                // logo abaixo, centrada na fronteira). O mesmo vale para a
+                // borda esquerda quando a vizinha da ESQUERDA está colada
+                // nela.
+                const idVizinhaDireitaColada = juncoesPorPalavraId.get(palavra.id) || null;
+                const temJuncaoNaDireita = !!idVizinhaDireitaColada;
+                const temJuncaoNaEsquerda = idsComJuncaoNaEsquerda.has(palavra.id);
 
                 return (
                   <div
@@ -633,67 +797,131 @@ export function TelaTimeline({
                       fontSize: 12,
                       fontWeight: 600,
                       boxSizing: 'border-box',
-                      transition: 'border-color 100ms ease',
+                      transition: emArraste ? 'none' : 'border-color 100ms ease',
+                      opacity: emArraste ? 0.85 : 1,
+                      boxShadow: emArraste ? `0 0 0 1px ${COR_AMBAR}, 0 4px 12px rgba(0,0,0,0.4)` : 'none',
+                      zIndex: emArraste ? 4 : 1,
                       display: 'flex',
                       alignItems: 'center',
                       cursor: 'pointer',
                       overflow: 'hidden',
                     }}
                   >
-                    <div
-                      onPointerDown={(e) => iniciarResize(e, palavra, 'esquerda')}
-                      onPointerMove={moverResize}
-                      onPointerUp={finalizarResize}
-                      onPointerCancel={finalizarResize}
-                      style={{
-                        position: 'absolute',
-                        left: 0,
-                        top: 0,
-                        bottom: 0,
-                        width: LARGURA_ALCA_PX,
-                        cursor: 'ew-resize',
-                        touchAction: 'none',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                      }}
-                    >
-                      <div style={{ width: 3, height: 16, borderRadius: 2, background: 'rgba(255,255,255,0.65)' }} />
-                    </div>
+                    {/* Alça de resize individual da borda ESQUERDA — só
+                        ativa quando não há junção com a vizinha da
+                        esquerda (senão a alça de junção cuida disso). */}
+                    {!temJuncaoNaEsquerda && (
+                      <div
+                        onPointerDown={(e) => iniciarResize(e, palavra, 'esquerda')}
+                        onPointerMove={moverResize}
+                        onPointerUp={finalizarResize}
+                        onPointerCancel={finalizarResize}
+                        style={{
+                          position: 'absolute',
+                          left: 0,
+                          top: 0,
+                          bottom: 0,
+                          width: LARGURA_ALCA_PX,
+                          cursor: 'ew-resize',
+                          touchAction: 'none',
+                          zIndex: 2,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <div style={{ width: 3, height: 16, borderRadius: 2, background: 'rgba(255,255,255,0.65)' }} />
+                      </div>
+                    )}
 
                     <span
+                      onPointerDown={(e) => iniciarMover(e, palavra)}
+                      onPointerMove={moverMover}
+                      onPointerUp={finalizarMover}
+                      onPointerCancel={finalizarMover}
                       style={{
                         flex: 1,
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
                         padding: `0 ${LARGURA_ALCA_PX + 4}px`,
-                        pointerEvents: 'none',
+                        height: '100%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        cursor: emArraste ? 'grabbing' : 'grab',
+                        touchAction: 'none',
                       }}
                     >
                       {palavra.texto}
                     </span>
 
-                    <div
-                      onPointerDown={(e) => iniciarResize(e, palavra, 'direita')}
-                      onPointerMove={moverResize}
-                      onPointerUp={finalizarResize}
-                      onPointerCancel={finalizarResize}
-                      style={{
-                        position: 'absolute',
-                        right: 0,
-                        top: 0,
-                        bottom: 0,
-                        width: LARGURA_ALCA_PX,
-                        cursor: 'ew-resize',
-                        touchAction: 'none',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                      }}
-                    >
-                      <div style={{ width: 3, height: 16, borderRadius: 2, background: 'rgba(255,255,255,0.65)' }} />
-                    </div>
+                    {/* Alça de resize individual da borda DIREITA — só
+                        ativa quando não há junção com a vizinha da
+                        direita. */}
+                    {!temJuncaoNaDireita && (
+                      <div
+                        onPointerDown={(e) => iniciarResize(e, palavra, 'direita')}
+                        onPointerMove={moverResize}
+                        onPointerUp={finalizarResize}
+                        onPointerCancel={finalizarResize}
+                        style={{
+                          position: 'absolute',
+                          right: 0,
+                          top: 0,
+                          bottom: 0,
+                          width: LARGURA_ALCA_PX,
+                          cursor: 'ew-resize',
+                          touchAction: 'none',
+                          zIndex: 2,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <div style={{ width: 3, height: 16, borderRadius: 2, background: 'rgba(255,255,255,0.65)' }} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* Alças de JUNÇÃO: uma por par de palavras coladas,
+                  desenhada por cima, centrada exatamente na fronteira
+                  entre as duas. Arrastar move o fim da esquerda e o
+                  início da direita ao mesmo tempo (estilo DaVinci
+                  Resolve). Só existe quando o espaço entre elas é ~0 —
+                  quando há espaço livre, cada palavra é redimensionada
+                  individualmente pela sua própria alça de borda. */}
+              {palavras.map((palavra) => {
+                const idVizinhaDireitaColada = juncoesPorPalavraId.get(palavra.id);
+                if (!idVizinhaDireitaColada) return null;
+                if (arrastoVisual?.palavraId === palavra.id) return null; // some durante arraste de mover
+
+                const fronteira = limitarNumero(palavra.fim) * pxPorSegundo;
+
+                return (
+                  <div
+                    key={`juncao-${palavra.id}`}
+                    onPointerDown={(e) => iniciarResizeJuncao(e, palavra.id, idVizinhaDireitaColada)}
+                    onPointerMove={moverResizeJuncao}
+                    onPointerUp={finalizarResizeJuncao}
+                    onPointerCancel={finalizarResizeJuncao}
+                    title="Arraste para redimensionar as duas palavras coladas"
+                    style={{
+                      position: 'absolute',
+                      left: fronteira - LARGURA_ALCA_JUNCAO_PX / 2,
+                      top: 10,
+                      width: LARGURA_ALCA_JUNCAO_PX,
+                      height: 38,
+                      cursor: 'ew-resize',
+                      touchAction: 'none',
+                      zIndex: 3,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <div style={{ width: 3, height: 20, borderRadius: 2, background: COR_AZUL }} />
                   </div>
                 );
               })}

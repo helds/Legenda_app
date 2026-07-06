@@ -286,8 +286,8 @@ export function CaptionComposition({ projeto, corFundo, videoPreviewSrc }) {
         </AbsoluteFill>
       )}
 
-      <div style={{ ...videoFrameStyle, pointerEvents: 'none' }}>
-        {blocoAtivo && (
+        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+          {blocoAtivo && (
           <div
             style={{
               position: 'absolute',
@@ -298,8 +298,8 @@ export function CaptionComposition({ projeto, corFundo, videoPreviewSrc }) {
               flexWrap: 'wrap',
               gap: `${estiloPadrao.espacamentoPalavras ?? 0.4}em`,
               justifyContent: 'center',
-              width: 'max-content',
-              maxWidth: `${estiloPadrao.larguraContainer ?? 92}%`,
+              width: `${estiloPadrao.larguraContainer ?? 45}%`,
+              maxWidth: `${estiloPadrao.larguraContainer ?? 45}%`,
               height: estiloPadrao.alturaContainer ? `${estiloPadrao.alturaContainer}%` : 'auto',
               lineHeight: estiloPadrao.espacamentoLinhas ?? 1.2,
               paddingTop: `${estiloPadrao.margemCima ?? 0}px`,

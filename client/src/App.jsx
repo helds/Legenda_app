@@ -86,40 +86,183 @@ function calcularDuracaoFrames(blocos) {
   return Math.ceil((max + 0.5) * FPS) || FPS * 5;
 }
 
-function aplicarRippleTrim(blocos, { palavraId, lado, novoTempo, duracaoMinima }) {
+// Redimensiona APENAS a palavra alvo, sem alterar as vizinhas. Ela pode
+// crescer livremente pelo espaço vazio da timeline, só é limitada quando
+// encosta de fato no início/fim de outra palavra (evita sobrepor).
+// Isto é o comportamento "dentro do bloco": cada retângulo se comporta
+// como independente dos outros.
+function aplicarResizeIndividual(blocos, { palavraId, lado, novoTempo, duracaoMinima }) {
+  // Junta todas as palavras (de todos os blocos) para achar corretamente
+  // quem é a vizinha mais próxima no tempo, já que a vizinha "de fato" pode
+  // estar em outro bloco.
+  const todasPalavras = blocos.flatMap((b) => b.palavras || []);
+
   return blocos.map((bloco) => {
     const indice = (bloco.palavras || []).findIndex((p) => p.id === palavraId);
     if (indice === -1) return bloco;
 
     const palavras = bloco.palavras.map((p) => ({ ...p }));
     const alvo = palavras[indice];
-    const anterior = indice > 0 ? palavras[indice - 1] : null;
-    const proxima = indice < palavras.length - 1 ? palavras[indice + 1] : null;
 
     if (lado === 'direita') {
-      const limiteSuperior = proxima
-        ? Math.min(bloco.fim, proxima.fim - duracaoMinima)
-        : bloco.fim;
+      // Vizinha mais próxima à direita (qualquer palavra cujo início seja
+      // >= fim atual do alvo), para não invadi-la.
+      const vizinhasDepois = todasPalavras
+        .filter((p) => p.id !== palavraId && p.inicio >= alvo.fim - 0.0005)
+        .sort((a, b) => a.inicio - b.inicio);
+      const limiteSuperior = vizinhasDepois.length > 0 ? vizinhasDepois[0].inicio : Infinity;
+
       const novoFim = Math.max(alvo.inicio + duracaoMinima, Math.min(novoTempo, limiteSuperior));
-
       alvo.fim = Number(novoFim.toFixed(3));
-      if (proxima) {
-        proxima.inicio = Number(novoFim.toFixed(3));
-      }
     } else {
-      const limiteInferior = anterior
-        ? Math.max(bloco.inicio, anterior.inicio + duracaoMinima)
-        : bloco.inicio;
-      const novoInicio = Math.min(alvo.fim - duracaoMinima, Math.max(novoTempo, limiteInferior));
+      const vizinhasAntes = todasPalavras
+        .filter((p) => p.id !== palavraId && p.fim <= alvo.inicio + 0.0005)
+        .sort((a, b) => b.fim - a.fim);
+      const limiteInferior = vizinhasAntes.length > 0 ? vizinhasAntes[0].fim : 0;
 
+      const novoInicio = Math.min(alvo.fim - duracaoMinima, Math.max(novoTempo, limiteInferior));
       alvo.inicio = Number(novoInicio.toFixed(3));
-      if (anterior) {
-        anterior.fim = Number(novoInicio.toFixed(3));
-      }
     }
 
     return { ...bloco, palavras };
   });
+}
+
+// Limiar de distância (em segundos) abaixo do qual duas palavras vizinhas
+// são consideradas "coladas" e, portanto, redimensionáveis em conjunto pela
+// alça de junção (comportamento estilo DaVinci Resolve).
+const LIMIAR_JUNCAO_SEGUNDOS = 0.02;
+
+// Redimensiona a JUNÇÃO entre duas palavras coladas: arrastar o ponto de
+// contato move o fim da palavra da esquerda e o início da palavra da
+// direita ao mesmo tempo, como no editor de junções do DaVinci Resolve.
+// Só deve ser chamado quando as duas palavras realmente estão encostadas
+// (ver LIMIAR_JUNCAO_SEGUNDOS).
+function aplicarResizeJuncao(blocos, { palavraEsquerdaId, palavraDireitaId, novoTempo, duracaoMinima }) {
+  // Limites: o ponto de junção não pode passar do início da esquerda nem
+  // do fim da direita, sempre respeitando a duração mínima de cada uma.
+  let limiteInferior = -Infinity;
+  let limiteSuperior = Infinity;
+
+  blocos.forEach((bloco) => {
+    (bloco.palavras || []).forEach((p) => {
+      if (p.id === palavraEsquerdaId) limiteInferior = p.inicio + duracaoMinima;
+      if (p.id === palavraDireitaId) limiteSuperior = p.fim - duracaoMinima;
+    });
+  });
+
+  const novoPonto = Math.max(limiteInferior, Math.min(novoTempo, limiteSuperior));
+  const pontoArredondado = Number(novoPonto.toFixed(3));
+
+  return blocos.map((bloco) => {
+    const palavras = (bloco.palavras || []).map((p) => {
+      if (p.id === palavraEsquerdaId) return { ...p, fim: pontoArredondado };
+      if (p.id === palavraDireitaId) return { ...p, inicio: pontoArredondado };
+      return p;
+    });
+    return { ...bloco, palavras };
+  });
+}
+
+// Move uma palavra livremente para um novo intervalo [novoInicio, novoFim],
+// sem manter contato obrigatório com as vizinhas (ao contrário do resize por
+// alça, que é "ripple"). Qualquer palavra (do mesmo bloco ou de outro) cuja
+// janela de tempo seja invadida pelo novo intervalo é recortada
+// proporcionalmente à área coberta: se a sobreposição consome a palavra
+// inteira, ela é removida; se cobre só uma ponta, essa ponta é cortada.
+function aplicarMoverPalavraComCorte(blocos, { palavraId, novoInicio, novoFim, duracaoMinima }) {
+  const inicioAlvo = Math.min(novoInicio, novoFim - duracaoMinima);
+  const fimAlvo = Math.max(novoFim, inicioAlvo + duracaoMinima);
+
+  // Passo 1: aplica o novo intervalo na palavra movida.
+  let blocosAtualizados = blocos.map((bloco) => {
+    const indice = (bloco.palavras || []).findIndex((p) => p.id === palavraId);
+    if (indice === -1) return bloco;
+    const palavras = bloco.palavras.map((p) => ({ ...p }));
+    palavras[indice] = {
+      ...palavras[indice],
+      inicio: Number(inicioAlvo.toFixed(3)),
+      fim: Number(fimAlvo.toFixed(3)),
+    };
+    return { ...bloco, palavras };
+  });
+
+  // Passo 2: para cada outra palavra que se sobrepõe ao novo intervalo,
+  // recorta a área coberta. Palavras cuja sobra fique menor que a duração
+  // mínima são removidas.
+  blocosAtualizados = blocosAtualizados.map((bloco) => {
+    const palavrasFiltradas = [];
+
+    for (const palavra of bloco.palavras || []) {
+      if (palavra.id === palavraId) {
+        palavrasFiltradas.push(palavra);
+        continue;
+      }
+
+      const pInicio = palavra.inicio;
+      const pFim = palavra.fim;
+
+      const sobreposicaoInicio = Math.max(pInicio, inicioAlvo);
+      const sobreposicaoFim = Math.min(pFim, fimAlvo);
+      const haSobreposicao = sobreposicaoFim > sobreposicaoInicio;
+
+      if (!haSobreposicao) {
+        palavrasFiltradas.push(palavra);
+        continue;
+      }
+
+      // Contida inteiramente pelo intervalo movido: apagar.
+      if (inicioAlvo <= pInicio && fimAlvo >= pFim) {
+        continue; // remove a palavra
+      }
+
+      // Sobreposição só na ponta esquerda da palavra existente (o bloco
+      // movido cobre o começo dela) -> encurta pela esquerda.
+      if (inicioAlvo <= pInicio && fimAlvo < pFim) {
+        const novoInicioPalavra = fimAlvo;
+        if (pFim - novoInicioPalavra < duracaoMinima) continue; // vira menor que o mínimo -> remove
+        palavrasFiltradas.push({
+          ...palavra,
+          inicio: Number(novoInicioPalavra.toFixed(3)),
+        });
+        continue;
+      }
+
+      // Sobreposição só na ponta direita da palavra existente -> encurta
+      // pela direita.
+      if (fimAlvo >= pFim && inicioAlvo > pInicio) {
+        const novoFimPalavra = inicioAlvo;
+        if (novoFimPalavra - pInicio < duracaoMinima) continue;
+        palavrasFiltradas.push({
+          ...palavra,
+          fim: Number(novoFimPalavra.toFixed(3)),
+        });
+        continue;
+      }
+
+      // Sobreposição no meio da palavra existente (o bloco movido "fura" o
+      // centro dela): ficamos com a parte esquerda restante, já que não dá
+      // para dividir uma única palavra em duas. Se a parte esquerda for
+      // menor que o mínimo, ficamos com a direita; se ambas forem menores
+      // que o mínimo, a palavra é removida.
+      const restanteEsquerda = inicioAlvo - pInicio;
+      const restanteDireita = pFim - fimAlvo;
+      if (restanteEsquerda >= duracaoMinima) {
+        palavrasFiltradas.push({ ...palavra, fim: Number(inicioAlvo.toFixed(3)) });
+      } else if (restanteDireita >= duracaoMinima) {
+        palavrasFiltradas.push({ ...palavra, inicio: Number(fimAlvo.toFixed(3)) });
+      }
+      // senão: remove a palavra (sobra em ambos os lados era menor que o mínimo)
+    }
+
+    // Reordena por início, já que a palavra movida pode ter mudado de posição
+    // relativa às outras.
+    palavrasFiltradas.sort((a, b) => a.inicio - b.inicio);
+
+    return { ...bloco, palavras: palavrasFiltradas };
+  });
+
+  return blocosAtualizados;
 }
 
 export default function App() {
@@ -140,7 +283,6 @@ export default function App() {
 
   const playerRef = useRef(null);
   const [slotEditor, setSlotEditor] = useState(null);
-  const [slotTimeline, setSlotTimeline] = useState(null);
   const debounceResizeRef = useRef(null);
 
   const aoCriarProjeto = useCallback((id, proj) => {
@@ -266,7 +408,7 @@ export default function App() {
     ({ palavraId, lado, novoTempo, duracaoMinima }) => {
       setProjeto((projetoAtual) => {
         if (!projetoAtual) return projetoAtual;
-        const novosBlocos = aplicarRippleTrim(projetoAtual.blocos, {
+        const novosBlocos = aplicarResizeIndividual(projetoAtual.blocos, {
           palavraId,
           lado,
           novoTempo,
@@ -292,6 +434,80 @@ export default function App() {
     },
     [projetoId]
   );
+
+  // Redimensiona a JUNÇÃO entre duas palavras coladas (arrasta o ponto de
+  // contato, movendo o fim de uma e o início da outra ao mesmo tempo). Só
+  // é chamado pela TelaTimeline quando o cursor está sobre a lacuna entre
+  // dois blocos adjacentes (gap ~0), nunca dentro de um retângulo.
+  const aoRedimensionarJuncao = useCallback(
+    ({ palavraEsquerdaId, palavraDireitaId, novoTempo, duracaoMinima }) => {
+      setProjeto((projetoAtual) => {
+        if (!projetoAtual) return projetoAtual;
+        const novosBlocos = aplicarResizeJuncao(projetoAtual.blocos, {
+          palavraEsquerdaId,
+          palavraDireitaId,
+          novoTempo,
+          duracaoMinima,
+        });
+        return { ...projetoAtual, blocos: novosBlocos };
+      });
+
+      if (debounceResizeRef.current) clearTimeout(debounceResizeRef.current);
+      debounceResizeRef.current = setTimeout(() => {
+        setProjeto((projetoAtual) => {
+          if (!projetoAtual || !projetoId) return projetoAtual;
+          fetch(`/api/projetos/${projetoId}/blocos`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ blocos: projetoAtual.blocos }),
+          }).catch((err) => {
+            console.error('Falha:', err);
+          });
+          return projetoAtual;
+        });
+      }, 250);
+    },
+    [projetoId]
+  );
+
+  // Move uma palavra inteira (arrastando pelo centro do bloco) para uma
+  // nova posição no tempo, preservando sua duração. Ao contrário do
+  // redimensionamento por alça (ripple, mantém contato com vizinhas), aqui
+  // a palavra pode ser solta em qualquer posição livre da timeline; se ela
+  // for solta sobre outra(s) palavra(s), a área sobreposta é recortada das
+  // palavras atingidas (ou elas são removidas, se totalmente cobertas).
+  const aoMoverPalavra = useCallback(
+    ({ palavraId, novoInicio, novoFim, duracaoMinima }) => {
+      setProjeto((projetoAtual) => {
+        if (!projetoAtual) return projetoAtual;
+        const novosBlocos = aplicarMoverPalavraComCorte(projetoAtual.blocos, {
+          palavraId,
+          novoInicio,
+          novoFim,
+          duracaoMinima,
+        });
+        return { ...projetoAtual, blocos: novosBlocos };
+      });
+    },
+    []
+  );
+
+  // Persiste no servidor o estado final apos soltar o bloco (evita PATCH a
+  // cada pixel de arraste; so grava quando o usuario solta o mouse).
+  const aoFinalizarMoverPalavra = useCallback(() => {
+    if (!projetoId) return;
+    setProjeto((projetoAtual) => {
+      if (!projetoAtual) return projetoAtual;
+      fetch(`/api/projetos/${projetoId}/blocos`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blocos: projetoAtual.blocos }),
+      }).catch((err) => {
+        console.error('Falha:', err);
+      });
+      return projetoAtual;
+    });
+  }, [projetoId]);
 
   // CORREÇÃO (agulha não acompanhava o play): este efeito é o único
   // lugar que escuta os eventos reais do Remotion Player
@@ -357,7 +573,7 @@ export default function App() {
       if (tentativaId) cancelAnimationFrame(tentativaId);
       if (limpar) limpar();
     };
-  }, [projeto, slotEditor, slotTimeline]);
+  }, [projeto, slotEditor]);
 
   const aoBuscarTempo = useCallback((segundos) => {
     const player = playerRef.current;
@@ -385,9 +601,6 @@ export default function App() {
 
   const registrarSlotEditor = useCallback((no) => {
     setSlotEditor((atual) => (atual === no ? atual : no));
-  }, []);
-  const registrarSlotTimeline = useCallback((no) => {
-    setSlotTimeline((atual) => (atual === no ? atual : no));
   }, []);
 
   if (!projeto) {
@@ -417,7 +630,7 @@ export default function App() {
     .map((bloco) => (bloco?.palavras || []).map((p) => p?.texto || '').join(' '))
     .join(' ');
 
-  const slotAtivo = telaAtual === TELA_EDITOR ? slotEditor : slotTimeline;
+const slotAtivo = telaAtual === TELA_EDITOR ? slotEditor : null;
 
   const playerPortado = slotAtivo
     ? createPortal(
@@ -451,16 +664,14 @@ export default function App() {
           projeto={projeto}
           urlAudio={urlVideo}
           duracaoSegundos={duracaoSegundos}
-          tempoAtualSegundos={tempoAtualSegundos}
-          estaTocando={estaTocando}
-          aoAlternarPlayPause={aoAlternarPlayPause}
-          aoBuscarTempo={aoBuscarTempo}
           palavraSelecionadaId={palavraSelecionadaId}
           idsSelecionados={idsSelecionados}
           aoSelecionarPalavra={aoSelecionarPalavra}
           aoVoltarParaEditor={() => setTelaAtual(TELA_EDITOR)}
-          registrarSlotDoPlayer={registrarSlotTimeline}
           aoRedimensionarPalavra={aoRedimensionarPalavra}
+          aoRedimensionarJuncao={aoRedimensionarJuncao}
+          aoMoverPalavra={aoMoverPalavra}
+          aoFinalizarMoverPalavra={aoFinalizarMoverPalavra}
         />
       </div>
 
