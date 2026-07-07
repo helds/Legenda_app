@@ -766,6 +766,12 @@ export default function App() {
     .map((bloco) => (bloco?.palavras || []).map((p) => p?.texto || '').join(' '))
     .join(' ');
 
+  const playerInputProps = React.useMemo(() => ({
+    projeto,
+    corFundo: urlVideo ? 'transparent' : '#1a1a1a',
+    videoPreviewSrc: urlVideo,
+  }), [projeto, urlVideo]);
+
   const slotAtivo = telaAtual === TELA_EDITOR ? slotEditor : null;
 
   const playerPortado = slotAtivo
