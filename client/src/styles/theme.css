@@ -370,12 +370,6 @@ input[type="color"]::-webkit-color-swatch { border: none; border-radius: 3px; }
   box-shadow: 0 0 0 1px var(--accent-blue);
 }
 
-.word-chip.is-falando-agora {
-  border-color: var(--accent-amber);
-  box-shadow: 0 0 8px var(--accent-amber), 0 0 0 1px var(--accent-amber);
-  animation: pulse-glow 0.9s ease-in-out infinite;
-}
-
 /* ============================================================
    Status / feedback
    ============================================================ */

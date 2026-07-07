@@ -766,10 +766,6 @@ export default function App() {
     .map((bloco) => (bloco?.palavras || []).map((p) => p?.texto || '').join(' '))
     .join(' ');
 
-  // Estado (palavra ativa/progresso) calculado no tempo atual do Player,
-  // usado para destacar a palavra sendo falada agora na ListaPalavras.
-  const estadoAtual = projectModel.calcularEstadoNoTempo(projeto, tempoAtualSegundos);
-
   const slotAtivo = telaAtual === TELA_EDITOR ? slotEditor : null;
 
   const playerPortado = slotAtivo
@@ -943,7 +939,6 @@ export default function App() {
                   idsSelecionados={idsSelecionados}
                   aoSelecionarPalavra={aoSelecionarPalavra}
                   aoLimparSelecao={aoLimparSelecao}
-                  palavraAtivaAgoraId={estadoAtual?.palavraAtivaId || null}
                 />
               </div>
             </div>
@@ -1043,11 +1038,7 @@ export default function App() {
               titulo={idsSelecionados.length > 1
                 ? `Múltiplas palavras (${idsSelecionados.length})`
                 : `Palavra: "${palavraSelecionada.texto}"`}
-              aoMudar={(parcial) =>
-                idsSelecionados.length > 1
-                  ? aplicarPresetAoGrupo(parcial)
-                  : atualizarEstiloPalavra(palavraSelecionada.id, parcial)
-              }
+              aoMudar={(parcial) => atualizarEstiloPalavra(palavraSelecionada.id, parcial)}
               aoLimparOverride={() => limparOverride(palavraSelecionada.id)}
             />
           )}

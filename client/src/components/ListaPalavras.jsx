@@ -1,7 +1,7 @@
 // client/src/components/ListaPalavras.jsx
 import React from 'react';
 
-export function ListaPalavras({ blocos, palavraSelecionadaId, idsSelecionados, palavraAtivaAgoraId, aoSelecionarPalavra, aoLimparSelecao }) {
+export function ListaPalavras({ blocos, palavraSelecionadaId, idsSelecionados, aoSelecionarPalavra, aoLimparSelecao }) {
   return (
     <div
       onClick={() => aoLimparSelecao?.()}
@@ -22,9 +22,6 @@ export function ListaPalavras({ blocos, palavraSelecionadaId, idsSelecionados, p
               if (temOverride) classes.push('has-override');
               if (selecionada) classes.push('is-selected');
               else if (emGrupo) classes.push('is-grouped');
-
-              const ativaAgora = palavra.id === palavraAtivaAgoraId;
-              if (ativaAgora) classes.push('is-falando-agora');
 
               function moverPalavraDeBloco(projeto, palavraId, blocoDestinoId) {
                 let palavraMovida = null;
