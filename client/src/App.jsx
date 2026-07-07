@@ -9,6 +9,8 @@ import { PainelPropriedades } from './components/PainelPropriedades';
 import { PainelExportacao } from './components/PainelExportacao';
 import { PainelSincronizacaoAudio } from './components/PainelSincronizacaoAudio';
 import { TelaTimeline } from './components/TelaTimeline';
+import { calcularEstadoNoTempo } from '../../shared/projectModel'; // ajuste path
+
 
 const FPS = 30;
 
@@ -64,6 +66,76 @@ class PreviewErrorBoundary extends React.Component {
     }
     return this.props.children;
   }
+}
+
+// Função auxiliar: Redimensiona um bloco e suas palavras proporcionalmente
+function redimensionarBlocoEPalavras(bloco, novoInicio, novoFim) {
+  const duracaoAntiga = bloco.fim - bloco.inicio;
+  const duracaoNova = novoFim - novoInicio;
+  const escala = duracaoAntiga > 0 ? duracaoNova / duracaoAntiga : 1;
+
+  const palavras = bloco.palavras.map((p) => ({
+    ...p,
+    inicio: novoInicio + (p.inicio - bloco.inicio) * escala,
+    fim: novoInicio + (p.fim - bloco.inicio) * escala,
+  }));
+
+  return { ...bloco, inicio: novoInicio, fim: novoFim, palavras };
+}
+
+// Função Principal: Aplica o redimensionamento e adapta os blocos vizinhos
+function aplicarResizeBlocoComAdaptacao(blocos, { blocoId, novoInicio, novoFim }) {
+  const indexAlvo = blocos.findIndex((b) => b.id === blocoId);
+  if (indexAlvo === -1) return blocos;
+
+  let novosBlocos = [...blocos];
+
+  // GAP é o espaço entre blocos. Deixei 0, mas se quiser que o bloco A fique 12-13.9 
+  // e o B 14-20, você pode colocar GAP = 0.1, por exemplo.
+  const GAP = 0;
+
+  // 1. Evita inversão de tempo (garante duração mínima de 0.1s para o bloco editado)
+  const inicioSeguro = Math.min(novoInicio, novoFim - 0.1);
+  const fimSeguro = Math.max(novoFim, novoInicio + 0.1);
+
+  // 2. Redimensiona o bloco alvo (o que o usuário editou no input)
+  novosBlocos[indexAlvo] = redimensionarBlocoEPalavras(novosBlocos[indexAlvo], inicioSeguro, fimSeguro);
+
+  // 3. Adapta os blocos ANTERIORES em cascata (se o novo início invadir o espaço deles)
+  for (let i = indexAlvo - 1; i >= 0; i--) {
+    const blocoAnterior = novosBlocos[i];
+    const blocoPosterior = novosBlocos[i + 1]; // Bloco que acabou de ser empurrado
+
+    // Se o fim do bloco de trás invade o início do bloco da frente...
+    if (blocoAnterior.fim > blocoPosterior.inicio - GAP) {
+      const novoFimAdaptado = blocoPosterior.inicio - GAP;
+      // Garante que o bloco anterior não desapareça (duração mínima 0.1s)
+      const novoInicioAdaptado = Math.min(blocoAnterior.inicio, novoFimAdaptado - 0.1);
+
+      novosBlocos[i] = redimensionarBlocoEPalavras(blocoAnterior, novoInicioAdaptado, novoFimAdaptado);
+    } else {
+      break; // Se não invadiu este bloco, não vai invadir os que estão antes dele
+    }
+  }
+
+  // 4. Adapta os blocos SEGUINTES em cascata (se o novo fim invadir o espaço deles)
+  for (let i = indexAlvo + 1; i < novosBlocos.length; i++) {
+    const blocoProximo = novosBlocos[i];
+    const blocoAnterior = novosBlocos[i - 1]; // Bloco que acabou de ser empurrado
+
+    // Se o início do bloco da frente for atropelado pelo fim do bloco de trás...
+    if (blocoProximo.inicio < blocoAnterior.fim + GAP) {
+      const novoInicioAdaptado = blocoAnterior.fim + GAP;
+      // Garante que o bloco da frente não desapareça
+      const novoFimAdaptado = Math.max(blocoProximo.fim, novoInicioAdaptado + 0.1);
+
+      novosBlocos[i] = redimensionarBlocoEPalavras(blocoProximo, novoInicioAdaptado, novoFimAdaptado);
+    } else {
+      break; // Se não invadiu este bloco, não vai invadir os que estão depois dele
+    }
+  }
+
+  return novosBlocos;
 }
 
 function resolverUrlVideo(caminhoVideo) {
@@ -153,6 +225,8 @@ function aplicarResizeJuncao(blocos, { palavraEsquerdaId, palavraDireitaId, novo
 
   const novoPonto = Math.max(limiteInferior, Math.min(novoTempo, limiteSuperior));
   const pontoArredondado = Number(novoPonto.toFixed(3));
+  const [mostrarEditorSrt, setMostrarEditorSrt] = useState(false);
+  const estadoAtual = calcularEstadoNoTempo(projeto, tempoAtualSegundos);
 
   return blocos.map((bloco) => {
     const palavras = (bloco.palavras || []).map((p) => {
@@ -201,6 +275,20 @@ function aplicarMoverPalavraComCorte(blocos, { palavraId, novoInicio, novoFim, d
 
       const pInicio = palavra.inicio;
       const pFim = palavra.fim;
+
+      const alterarTempoDaLinha = useCallback((blocoId, novoInicio, novoFim) => {
+        setProjeto((projetoAtual) => {
+          if (!projetoAtual) return null;
+
+          const novosBlocos = aplicarResizeBlocoComAdaptacao(projetoAtual.blocos, {
+            blocoId,
+            novoInicio,
+            novoFim,
+          });
+
+          return { ...projetoAtual, blocos: novosBlocos };
+        });
+      }, []);
 
       const sobreposicaoInicio = Math.max(pInicio, inicioAlvo);
       const sobreposicaoFim = Math.min(pFim, fimAlvo);
@@ -264,6 +352,7 @@ function aplicarMoverPalavraComCorte(blocos, { palavraId, novoInicio, novoFim, d
 
   return blocosAtualizados;
 }
+
 
 export default function App() {
   const [projetoId, setProjetoId] = useState(null);
@@ -630,7 +719,7 @@ export default function App() {
     .map((bloco) => (bloco?.palavras || []).map((p) => p?.texto || '').join(' '))
     .join(' ');
 
-const slotAtivo = telaAtual === TELA_EDITOR ? slotEditor : null;
+  const slotAtivo = telaAtual === TELA_EDITOR ? slotEditor : null;
 
   const playerPortado = slotAtivo
     ? createPortal(
@@ -716,6 +805,13 @@ const slotAtivo = telaAtual === TELA_EDITOR ? slotEditor : null;
             </div>
           </div>
 
+          <button
+            className={`btn ${mostrarEditorSrt ? 'btn--primary' : ''}`}
+            onClick={() => setMostrarEditorSrt(!mostrarEditorSrt)}
+          >
+            {mostrarEditorSrt ? 'Fechar Editor SRT' : 'Editor de Legenda'}
+          </button>
+
           {!urlVideo && (
             <p className="status-line status-line--info" style={{ margin: 0, flexShrink: 0 }}>
               Nenhum vídeo de referência selecionado — o preview mostra só a legenda.
@@ -783,6 +879,7 @@ const slotAtivo = telaAtual === TELA_EDITOR ? slotEditor : null;
                   palavraSelecionadaId={palavraSelecionadaId}
                   idsSelecionados={idsSelecionados}
                   aoSelecionarPalavra={aoSelecionarPalavra}
+                  palavraAtivaAgoraId={estadoAtual?.palavraAtivaId || null}
                 />
               </div>
             </div>
@@ -876,15 +973,17 @@ const slotAtivo = telaAtual === TELA_EDITOR ? slotEditor : null;
               para um grupo) para editar seu estilo individual.
             </div>
           )}
-
           {modoEdicao === MODO_SELECAO && palavraSelecionada && (
             <PainelPropriedades
               estilo={estiloEmEdicao}
-              // O título muda de forma inteligente consoante o número de palavras selecionadas
               titulo={idsSelecionados.length > 1
                 ? `Múltiplas palavras (${idsSelecionados.length})`
                 : `Palavra: "${palavraSelecionada.texto}"`}
-              aoMudar={(parcial) => atualizarEstiloPalavra(palavraSelecionada.id, parcial)}
+              aoMudar={(parcial) =>
+                idsSelecionados.length > 1
+                  ? aplicarPresetAoGrupo(parcial)
+                  : atualizarEstiloPalavra(palavraSelecionada.id, parcial)
+              }
               aoLimparOverride={() => limparOverride(palavraSelecionada.id)}
             />
           )}

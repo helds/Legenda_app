@@ -3,7 +3,7 @@ import React from 'react';
 
 export function ListaPalavras({ blocos, palavraSelecionadaId, idsSelecionados, aoSelecionarPalavra }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4,overflowY: 'auto' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, overflowY: 'auto' }}>
       {blocos.map((bloco) => (
         <div key={bloco.id} className="word-block">
           <div className="word-block__time">
@@ -19,6 +19,27 @@ export function ListaPalavras({ blocos, palavraSelecionadaId, idsSelecionados, a
               if (temOverride) classes.push('has-override');
               if (selecionada) classes.push('is-selected');
               else if (emGrupo) classes.push('is-grouped');
+
+              const ativaAgora = palavra.id === palavraAtivaAgoraId;
+              if (ativaAgora) classes.push('is-falando-agora');
+
+              function moverPalavraDeBloco(projeto, palavraId, blocoDestinoId) {
+                let palavraMovida = null;
+                const blocosSemPalavra = projeto.blocos.map((b) => ({
+                  ...b,
+                  palavras: b.palavras.filter((p) => {
+                    if (p.id === palavraId) { palavraMovida = p; return false; }
+                    return true;
+                  }),
+                }));
+                if (!palavraMovida) return projeto;
+                const blocosFinal = blocosSemPalavra.map((b) =>
+                  b.id === blocoDestinoId
+                    ? { ...b, palavras: [...b.palavras, palavraMovida].sort((a, z) => a.inicio - z.inicio) }
+                    : b
+                );
+                return { ...projeto, blocos: blocosFinal };
+              }
 
               return (
                 <button
