@@ -2,6 +2,12 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useWavesurfer } from '../hooks/useWavesurfer';
 import { LegendaFlutuante } from './LegendaFlutuante';
+// projectModel.js é CommonJS (module.exports), então o Vite expõe tudo
+// agrupado como default export — não dá para desestruturar direto no
+// import (`import { corDaPalavraPorVolume } from ...` falha em runtime
+// com "does not provide an export named"). Importamos o objeto inteiro
+// e pegamos a função dele.
+import { corDaPalavraPorVolume } from '../../../shared/projectModel';
 
 const PX_POR_SEGUNDO_BASE = 72;
 const ZOOM_MIN = 0.25;
@@ -28,6 +34,12 @@ const COR_TEXTO_TERC = '#6b6d76';
 const COR_AMBAR = '#ef9f27';
 const COR_AZUL = '#5b8def';
 const COR_WAVE = '#3d9b8a';
+
+// Cor sólida usada quando a palavra NÃO tem dado de volume (projeto
+// criado só a partir de .srt, sem sincronização de áudio) — mesma cor
+// que já existia antes desta funcionalidade, para não mudar a aparência
+// de projetos que nunca rodaram a análise de volume.
+const COR_BLOCO_SEM_VOLUME = '#c9bfa1';
 
 function limitarNumero(valor, fallback = 0) {
   return Number.isFinite(valor) ? valor : fallback;
@@ -64,6 +76,31 @@ function coletarPalavras(blocos) {
       blocoId: bloco.id,
     }))
   );
+}
+
+// Decide a cor de fundo e a cor de texto do retângulo de uma palavra na
+// trilha de legenda da timeline, considerando (em ordem de prioridade):
+//   1. Volume (se o projeto tiver `volumeReferencia` e a palavra tiver
+//      `volumeDb`) — gradiente contínuo azul (abaixo da média) -> verde
+//      (na média) -> vermelho (acima da média). Isso é o sinal mais
+//      importante para o usuário identificar variações de volume.
+//   2. Fallback: a cor sólida antiga (bege quando sem override de
+//      estilo, âmbar-transparente quando com override), usada sempre
+//      que não há dado de volume disponível para aquela palavra.
+//
+// O texto muda para branco sobre fundos coloridos por volume (todos os
+// 3 pontos do gradiente — azul, verde, vermelho — são escuros o
+// suficiente para contraste com texto claro), e mantém o esquema antigo
+// (claro/escuro conforme override) quando cai no fallback.
+function resolverCoresDoBlocoDePalavra(palavra, volumeReferencia) {
+  const corVolume = corDaPalavraPorVolume(palavra, volumeReferencia);
+  if (corVolume) {
+    return { fundo: corVolume, texto: '#f5f4f0' };
+  }
+  return {
+    fundo: palavra.estilo ? 'rgba(239,159,39,0.16)' : COR_BLOCO_SEM_VOLUME,
+    texto: palavra.estilo ? COR_TEXTO : '#242017',
+  };
 }
 
 // CORREÇÃO (Timeline sem vídeo/Player): a TelaTimeline não depende mais
@@ -234,6 +271,13 @@ export function TelaTimeline({
   const larguraTotal = Math.max(800, Math.ceil(duracao * pxPorSegundo));
 
   const palavras = useMemo(() => coletarPalavras(projeto?.blocos), [projeto]);
+
+  // Referência global de volume do projeto (min/média ponderada/max),
+  // preenchida pela sincronização automática de áudio (ver
+  // server/audioSyncService.js e shared/projectModel.js#criarProjeto).
+  // Pode ser null/undefined em projetos sem análise de áudio — nesse
+  // caso resolverCoresDoBlocoDePalavra cai de volta na cor sólida antiga.
+  const volumeReferencia = projeto?.volumeReferencia || null;
 
   // Para cada palavra, identifica se há uma vizinha colada imediatamente à
   // direita (gap <= LIMIAR_JUNCAO_SEGUNDOS). Quando há, a fronteira entre
@@ -561,6 +605,32 @@ export function TelaTimeline({
         </h2>
 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 16 }}>
+          {volumeReferencia && (
+            <div
+              title={
+                `Cor por volume: azul = mais baixo, verde = na média (${volumeReferencia.volumeDbMedia?.toFixed?.(1)} dB), vermelho = mais alto`
+              }
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                fontSize: 11.5,
+                color: COR_TEXTO_TERC,
+              }}
+            >
+              <span
+                style={{
+                  display: 'inline-block',
+                  width: 64,
+                  height: 8,
+                  borderRadius: 4,
+                  background: 'linear-gradient(90deg, #5b8def, #6fbf8b, #e5675f)',
+                }}
+              />
+              <span>Volume (baixo → alto)</span>
+            </div>
+          )}
+
           <button
             onClick={() => aoAlternarPlayPause?.()}
             style={{
@@ -776,10 +846,20 @@ export function TelaTimeline({
                 const temJuncaoNaDireita = !!idVizinhaDireitaColada;
                 const temJuncaoNaEsquerda = idsComJuncaoNaEsquerda.has(palavra.id);
 
+                // Cor do bloco: por volume (gradiente azul/verde/vermelho)
+                // quando o projeto tem dados de sincronização de áudio,
+                // ou a cor sólida antiga como fallback.
+                const { fundo: corFundoBloco, texto: corTextoBloco } =
+                  resolverCoresDoBlocoDePalavra(palavra, volumeReferencia);
+
                 return (
                   <div
                     key={palavra.id}
-                    title={`${palavra.texto} — ${inicio.toFixed(2)}s a ${fim.toFixed(2)}s`}
+                    title={
+                      typeof palavra.volumeDb === 'number'
+                        ? `${palavra.texto} — ${inicio.toFixed(2)}s a ${fim.toFixed(2)}s — ${palavra.volumeDb.toFixed(1)} dB`
+                        : `${palavra.texto} — ${inicio.toFixed(2)}s a ${fim.toFixed(2)}s`
+                    }
                     onClick={(evento) => {
                       evento.stopPropagation();
                       aoSelecionarPalavra?.(palavra.id, evento.ctrlKey);
@@ -792,12 +872,12 @@ export function TelaTimeline({
                       height: 38,
                       borderRadius: 6,
                       border: selecionada ? `2px solid ${COR_AMBAR}` : emGrupo ? `2px solid ${COR_AZUL}` : `1px solid ${COR_HAIRLINE}`,
-                      background: palavra.estilo ? 'rgba(239,159,39,0.16)' : '#c9bfa1',
-                      color: palavra.estilo ? COR_TEXTO : '#242017',
+                      background: corFundoBloco,
+                      color: corTextoBloco,
                       fontSize: 12,
                       fontWeight: 600,
                       boxSizing: 'border-box',
-                      transition: emArraste ? 'none' : 'border-color 100ms ease',
+                      transition: emArraste ? 'none' : 'border-color 100ms ease, background-color 150ms ease',
                       opacity: emArraste ? 0.85 : 1,
                       boxShadow: emArraste ? `0 0 0 1px ${COR_AMBAR}, 0 4px 12px rgba(0,0,0,0.4)` : 'none',
                       zIndex: emArraste ? 4 : 1,

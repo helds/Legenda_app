@@ -12,6 +12,11 @@
 //      cada palavra — que pode então ser usado para automatizar estilo
 //      (ex: escala de tamanho de fonte proporcional ao volume, ver
 //      2.3.3 "Volume" e 2.3.6 "Type Size Range" do design system).
+//   4. Anexar ao projeto os valores de referência globais de volume
+//      (volumeDbMin/Max/Media) — usados pela timeline (client) para
+//      colorir cada bloco de palavra conforme seu volume relativo à
+//      média do áudio (ver TelaTimeline.jsx e
+//      shared/projectModel.js#corPorVolume).
 //
 // Este módulo não faz nenhuma inferência de IA por conta própria — toda
 // a parte de machine learning (Whisper + wav2vec2) roda isolada no
@@ -71,7 +76,7 @@ function extrairJsonDaSaida(stdoutBuffer) {
  *   útil para mostrar progresso na interface enquanto o alignment roda
  *   (processo pode levar de segundos a minutos, dependendo da duração
  *   do áudio e se há GPU disponível).
- * @returns {Promise<{ palavras: Array, volumeDbMin: number, volumeDbMax: number }>}
+ * @returns {Promise<{ palavras: Array, volumeDbMin: number, volumeDbMax: number, volumeDbMedia: number }>}
  */
 function executarAlignmentPython({
   caminhoAudio,
@@ -212,6 +217,42 @@ function listarPalavrasDoProjeto(projeto) {
   return palavras;
 }
 
+// Recalcula volumeDbMin/Max/Media (ponderada por duração) a partir de uma
+// lista plana de palavras que já tenham o campo `volumeDb` preenchido.
+// Usado tanto ao adaptar um alignment a um projeto existente (onde a
+// referência global pode mudar levemente por causa de palavras
+// descartadas/reordenadas) quanto como salvaguarda caso o Python não
+// tenha enviado volumeDbMedia (versões antigas do aligner).
+function calcularReferenciasDeVolume(palavras) {
+  const validas = (palavras || []).filter(
+    (p) => p && typeof p.volumeDb === 'number' && Number.isFinite(p.volumeDb)
+  );
+  if (validas.length === 0) return null;
+
+  let min = Infinity;
+  let max = -Infinity;
+  let somaPonderada = 0;
+  let duracaoTotal = 0;
+
+  validas.forEach((p) => {
+    if (p.volumeDb < min) min = p.volumeDb;
+    if (p.volumeDb > max) max = p.volumeDb;
+    const duracao = Math.max(0, (p.fim ?? 0) - (p.inicio ?? 0));
+    somaPonderada += p.volumeDb * duracao;
+    duracaoTotal += duracao;
+  });
+
+  const media = duracaoTotal > 0
+    ? somaPonderada / duracaoTotal
+    : validas.reduce((soma, p) => soma + p.volumeDb, 0) / validas.length;
+
+  return {
+    volumeDbMin: Number(min.toFixed(2)),
+    volumeDbMax: Number(max.toFixed(2)),
+    volumeDbMedia: Number(media.toFixed(2)),
+  };
+}
+
 function adaptarAlignmentAoProjetoExistente(projeto, blocosAlinhados) {
   const palavrasOriginais = listarPalavrasDoProjeto(projeto);
   const palavrasAlinhadas = listarPalavrasDoProjeto({ blocos: blocosAlinhados })
@@ -266,9 +307,19 @@ function adaptarAlignmentAoProjetoExistente(projeto, blocosAlinhados) {
     }
   });
 
+  // Recalcula as referências globais de volume (min/max/média ponderada)
+  // com base no que de fato ficou no projeto após o ajuste, para que a
+  // timeline sempre colora as palavras relativas ao volume real dos
+  // dados que ela está exibindo.
+  const todasAsPalavrasFinais = listarPalavrasDoProjeto({ blocos: blocosAtualizados }).map(
+    ({ palavra }) => palavra
+  );
+  const referencias = calcularReferenciasDeVolume(todasAsPalavrasFinais);
+
   return {
     ...projeto,
     blocos: blocosAtualizados,
+    ...(referencias ? { volumeReferencia: referencias } : {}),
   };
 }
 function agruparPalavrasEmBlocos(palavrasAlinhadas) {
@@ -335,7 +386,15 @@ function agruparPalavrasEmBlocos(palavrasAlinhadas) {
  * O chamador (rota HTTP do server, ou um script de importação) é
  * responsável por combinar o resultado com criarProjeto({ blocos, ... }).
  *
- * @returns {Promise<{ blocos: Array, volumeDbMin: number, volumeDbMax: number }>}
+ * NOTA: quando o retorno aqui é usado para popular um projeto NOVO
+ * (fluxo de criarProjeto), quem chama esta função deve também salvar
+ * `volumeDbMin`/`volumeDbMax`/`volumeDbMedia` dentro do projeto (campo
+ * `volumeReferencia`), do mesmo jeito que
+ * adaptarAlignmentAoProjetoExistente já faz automaticamente para
+ * projetos existentes — senão a timeline não tem como colorir as
+ * palavras depois de o projeto ser recarregado do disco.
+ *
+ * @returns {Promise<{ blocos: Array, volumeDbMin: number, volumeDbMax: number, volumeDbMedia: number }>}
  */
 async function sincronizarAudioComTexto({ caminhoAudio, texto, idioma, aoProgredir }) {
   const resultado = await executarAlignmentPython({
@@ -353,10 +412,21 @@ async function sincronizarAudioComTexto({ caminhoAudio, texto, idioma, aoProgred
     );
   }
 
+  // Preferimos os valores vindos do Python (calculados sobre TODAS as
+  // palavras alinhadas, antes de qualquer filtragem de validade); caso
+  // não venham (versão antiga do aligner.py sem volumeDbMedia), caímos
+  // para recalcular localmente a partir das palavras já agrupadas.
+  const referenciasFallback = resultado.volumeDbMedia === undefined
+    ? calcularReferenciasDeVolume(
+        blocos.flatMap((b) => b.palavras)
+      )
+    : null;
+
   return {
     blocos,
-    volumeDbMin: resultado.volumeDbMin,
-    volumeDbMax: resultado.volumeDbMax,
+    volumeDbMin: resultado.volumeDbMin ?? referenciasFallback?.volumeDbMin,
+    volumeDbMax: resultado.volumeDbMax ?? referenciasFallback?.volumeDbMax,
+    volumeDbMedia: resultado.volumeDbMedia ?? referenciasFallback?.volumeDbMedia,
   };
 }
 
@@ -382,5 +452,6 @@ module.exports = {
   sincronizarAudioComTexto,
   agruparPalavrasEmBlocos,
   adaptarAlignmentAoProjetoExistente,
+  calcularReferenciasDeVolume,
   mapearVolumeParaTamanhoFonte,
 };

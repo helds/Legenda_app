@@ -6,11 +6,18 @@ const fs = require('fs');
 const path = require('path');
 
 const { parseSRT, aplicarOffset } = require('../shared/srtParser');
-const {
-  criarProjeto,
-  aplicarPresetAPalavras,
-  resolverEstilo,
-} = require('../shared/projectModel');
+// 1. Criamos uma variável vazia para guardar as funções do modelo
+let projectModel = {};
+
+// 2. Importamos o arquivo assincronamente e guardamos o que precisamos nela
+import('../shared/projectModel.js').then((modulo) => {
+  projectModel = modulo;
+});
+
+// 3. Criamos funções auxiliares com o mesmo nome para o restante do código não quebrar
+const criarProjeto = (...args) => projectModel.criarProjeto(...args);
+const aplicarPresetAPalavras = (...args) => projectModel.aplicarPresetAPalavras(...args);
+const resolverEstilo = (...args) => projectModel.resolverEstilo(...args);
 const {
   sincronizarAudioComTexto,
   adaptarAlignmentAoProjetoExistente,

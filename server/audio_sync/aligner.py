@@ -17,6 +17,16 @@ Faz duas coisas, dado um arquivo de áudio/vídeo e o texto já transcrito
    permite ao client mapear volume -> tamanho de fonte, seguindo a seção
    2.3.3 "Volume" do design system Caption with Intention.
 
+   NOVO: além de min/max, também calculamos volumeDbMedia — a média de
+   volumeDb de todas as palavras, PONDERADA pela duração de cada uma.
+   Isso serve como "centro" de referência para o client colorir cada
+   palavra (azul = mais baixo que a média, verde = na média, vermelho =
+   mais alto que a média — ver client/src/components/TelaTimeline.jsx).
+   Ponderar por duração evita que palavras muito curtas (ex: "e", "a"),
+   cuja medição de RMS é naturalmente mais ruidosa por causa da janela
+   curta, puxem a média de forma desproporcional ao seu peso real no
+   áudio.
+
 USO:
     python aligner.py --audio caminho/audio.wav --texto caminho/texto.txt --saida resultado.json
 
@@ -30,7 +40,8 @@ SAÍDA (JSON):
         ...
       ],
       "volumeDbMin": -42.0,
-      "volumeDbMax": -6.0
+      "volumeDbMax": -6.0,
+      "volumeDbMedia": -19.4
     }
 
 Este script é chamado como subprocesso pelo server Node
@@ -162,9 +173,22 @@ def calcular_volume_por_palavra(audio, taxa_amostragem, palavras):
     para uma escala de 0 a 1 relativa ao volume mínimo/máximo do áudio
     inteiro (útil para o client mapear diretamente para o range de
     tamanho de tipo, ver 2.3.6 "Type Size Range" do design system).
+
+    Além disso, calcula volumeDbMedia: a média de volumeDb entre todas as
+    palavras, PONDERADA pela duração de cada uma (fim - inicio). Essa
+    média ponderada serve como "centro" de referência (0.5 na escala
+    normalizada, na prática) para o client decidir se uma palavra está
+    "no volume normal" (verde), "mais baixa" (azul) ou "mais alta"
+    (vermelho) que o típico do áudio — ver TelaTimeline.jsx.
+
+    Ponderar por duração evita que palavras muito curtas (que tendem a
+    ter uma medição de RMS mais instável/ruidosa, por causa da janela de
+    amostras curta) distorçam a média tanto quanto uma palavra longa e
+    bem medida.
     """
     duracao_total = len(audio) / taxa_amostragem
     volumes_db = []
+    duracoes = []
 
     for palavra in palavras:
         inicio_amostra = int(max(0, palavra["inicio"]) * taxa_amostragem)
@@ -180,19 +204,30 @@ def calcular_volume_por_palavra(audio, taxa_amostragem, palavras):
 
         palavra["volumeDb"] = round(float(volume_db), 2)
         volumes_db.append(volume_db)
+        duracoes.append(max(0.0, palavra["fim"] - palavra["inicio"]))
 
     if not volumes_db:
-        return palavras, -60.0, 0.0
+        return palavras, -60.0, 0.0, -60.0
 
     volume_db_min = min(volumes_db)
     volume_db_max = max(volumes_db)
     faixa = max(volume_db_max - volume_db_min, 1e-6)  # evita divisão por zero
 
+    duracao_total_palavras = sum(duracoes)
+    if duracao_total_palavras > 0:
+        volume_db_media = sum(
+            v * d for v, d in zip(volumes_db, duracoes)
+        ) / duracao_total_palavras
+    else:
+        # Fallback (não deveria acontecer, mas protege contra palavras
+        # todas com duração 0): média simples não ponderada.
+        volume_db_media = sum(volumes_db) / len(volumes_db)
+
     for palavra in palavras:
         normalizado = (palavra["volumeDb"] - volume_db_min) / faixa
         palavra["volumeNormalizado"] = round(float(min(1.0, max(0.0, normalizado))), 3)
 
-    return palavras, volume_db_min, volume_db_max
+    return palavras, volume_db_min, volume_db_max, volume_db_media
 
 
 def main():
@@ -219,12 +254,15 @@ def main():
 
     log(f"{len(palavras)} palavras alinhadas. Calculando volume...")
     audio, taxa = carregar_audio(args.audio)
-    palavras, volume_db_min, volume_db_max = calcular_volume_por_palavra(audio, taxa, palavras)
+    palavras, volume_db_min, volume_db_max, volume_db_media = calcular_volume_por_palavra(
+        audio, taxa, palavras
+    )
 
     resultado_final = {
         "palavras": palavras,
         "volumeDbMin": round(float(volume_db_min), 2),
         "volumeDbMax": round(float(volume_db_max), 2),
+        "volumeDbMedia": round(float(volume_db_media), 2),
     }
 
     saida_json = json.dumps(resultado_final, ensure_ascii=False, indent=2)
