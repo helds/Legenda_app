@@ -1,9 +1,12 @@
 // client/src/components/ListaPalavras.jsx
 import React from 'react';
 
-export function ListaPalavras({ blocos, palavraSelecionadaId, idsSelecionados, palavraAtivaAgoraId, aoSelecionarPalavra }) {
+export function ListaPalavras({ blocos, palavraSelecionadaId, idsSelecionados, palavraAtivaAgoraId, aoSelecionarPalavra, aoLimparSelecao }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, overflowY: 'auto' }}>
+    <div
+      onClick={() => aoLimparSelecao?.()}
+      style={{ display: 'flex', flexDirection: 'column', gap: 4, overflowY: 'auto' }}
+    >
       {blocos.map((bloco) => (
         <div key={bloco.id} className="word-block">
           <div className="word-block__time">
@@ -44,7 +47,10 @@ export function ListaPalavras({ blocos, palavraSelecionadaId, idsSelecionados, p
               return (
                 <button
                   key={palavra.id}
-                  onClick={(e) => aoSelecionarPalavra(palavra.id, e.ctrlKey)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    aoSelecionarPalavra(palavra.id, e.ctrlKey);
+                  }}
                   className={classes.join(' ')}
                   title={temOverride ? 'Tem estilo customizado' : 'Usando estilo padrão'}
                 >

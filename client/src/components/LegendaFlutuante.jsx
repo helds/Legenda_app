@@ -42,6 +42,13 @@ function PalavraFlutuante({ palavra, estiloPadrao, tempoAtualSegundos, ativa }) 
   const inicioSeguro = typeof inicio === 'number' ? inicio : 0;
   const fimSeguro = typeof fim === 'number' ? fim : inicioSeguro;
 
+  const dentroDaJanelaAtiva = tempoAtualSegundos >= inicioSeguro && tempoAtualSegundos <= fimSeguro;
+
+  const progressoAtivacao = Math.max(0, Math.min(1, (tempoAtualSegundos - inicioSeguro) / Math.max(0.001, fimSeguro - inicioSeguro)));
+
+  const corTexto = progressoAtivacao > 0 ? estilo.corDestaque : estilo.corBase;
+  const pesoFonte = estilo.pesoFonte ?? 400;
+  const italico = estilo.italico ?? false;
   const modoRevelacao = estilo.modoRevelacao || 'palavra';
   const unidades = dividirEmUnidades(texto, modoRevelacao);
   const totalUnidades = unidades.length || 1;
@@ -53,8 +60,6 @@ function PalavraFlutuante({ palavra, estiloPadrao, tempoAtualSegundos, ativa }) 
   const corDestaque = estilo.corDestaque ?? '#FFCC00';
   const opacidadeAntesDoDestaque = estilo.opacidadeAntesDoDestaque ?? 0.9;
   const tamanhoBase = estilo.tamanhoBase ?? 42;
-  const pesoFonte = estilo.pesoFonte ?? 400;
-  const italico = estilo.italico ?? false;
 
   const escalaPulo = estilo.escalaPulo ?? estilo.escalaDestaque ?? 1.3;
   const elevacaoPulo = estilo.elevacaoPulo ?? 0.25;
@@ -67,8 +72,17 @@ function PalavraFlutuante({ palavra, estiloPadrao, tempoAtualSegundos, ativa }) 
         whiteSpace: 'pre',
         fontSize: `${tamanhoBase}px`,
         fontFamily: estilo.fonte || 'sans-serif',
-        fontWeight: pesoFonte,
-        fontStyle: italico ? 'italic' : 'normal',
+        fontWeight: estilo.estiloSoNoDestaque && !dentroDaJanelaAtiva
+          ? (estiloPadrao.pesoFonte ?? 400)
+          : pesoFonte,
+
+        fontStyle: estilo.estiloSoNoDestaque && !dentroDaJanelaAtiva
+          ? ((estiloPadrao.italico ?? false) ? 'italic' : 'normal')
+          : (italico ? 'italic' : 'normal'),
+
+        textTransform: estilo.caixaAlta ? 'uppercase' : 'none',
+        letterSpacing: `${estilo.espacamentoLetras ?? 0}px`,
+        transition: 'color 0.1s ease',
         outline: ativa ? '1px dashed rgba(239,159,39,0.4)' : 'none',
         outlineOffset: 4,
         borderRadius: 4,

@@ -54,6 +54,8 @@ function Palavra({ palavra, estiloPadrao, tempoAtualSegundos }) {
   const inicioSeguro = typeof inicio === 'number' ? inicio : 0;
   const fimSeguro = typeof fim === 'number' ? fim : inicioSeguro;
 
+  const dentroDaJanelaAtiva = tempoAtualSegundos >= inicioSeguro && tempoAtualSegundos <= fimSeguro;
+
   const modoRevelacao = estilo.modoRevelacao || 'palavra';
   const unidades = dividirEmUnidades(texto, modoRevelacao);
   const totalUnidades = unidades.length || 1;
@@ -83,8 +85,16 @@ function Palavra({ palavra, estiloPadrao, tempoAtualSegundos }) {
         fontSize: `${tamanhoBase}px`,
         fontFamily: estilo.fonte || 'sans-serif',
         // Se estiloSoNoDestaque estiver ativo, o estilo base ignora o peso/itálico customizado da palavra
-        fontWeight: estiloSoNoDestaque && tempoAtualSegundos < inicioSeguro ? (estiloPadrao.pesoFonte ?? 400) : pesoFonte,
-        fontStyle: estiloSoNoDestaque && tempoAtualSegundos < inicioSeguro ? ((estiloPadrao.italico ?? false) ? 'italic' : 'normal') : (italico ? 'italic' : 'normal'),
+        fontWeight: estilo.estiloSoNoDestaque && !dentroDaJanelaAtiva
+          ? (estiloPadrao.pesoFonte ?? 400)
+          : pesoFonte,
+
+        fontStyle: estilo.estiloSoNoDestaque && !dentroDaJanelaAtiva
+          ? ((estiloPadrao.italico ?? false) ? 'italic' : 'normal')
+          : (italico ? 'italic' : 'normal'),
+
+        textTransform: estilo.caixaAlta ? 'uppercase' : 'none',
+        letterSpacing: `${estilo.espacamentoLetras ?? 0}px`,
       }}
     >
       {unidades.map((unidadeChars, indexUnidade) => {
@@ -286,8 +296,8 @@ export function CaptionComposition({ projeto, corFundo, videoPreviewSrc }) {
         </AbsoluteFill>
       )}
 
-        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
-          {blocoAtivo && (
+      <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+        {blocoAtivo && (
           <div
             style={{
               position: 'absolute',

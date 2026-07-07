@@ -374,6 +374,12 @@ export default function App() {
   const [tempoAtualSegundos, setTempoAtualSegundos] = useState(0);
   const [estaTocando, setEstaTocando] = useState(false);
 
+  const aoLimparSelecao = useCallback(() => {
+    setPalavraSelecionadaId(null);
+    setIdsSelecionados([]);
+    setModoEdicao(MODO_GLOBAL);
+  }, []);
+
   const [mostrarSincronizacao, setMostrarSincronizacao] = useState(false);
   // CORREÇÃO: este estado (controle do painel de editor de SRT usado no
   // JSX abaixo) estava faltando aqui — uma cópia anterior dele tinha
@@ -446,14 +452,19 @@ export default function App() {
   const aoSelecionarPalavra = useCallback((id, comCtrl) => {
     setModoEdicao(MODO_SELECAO);
     if (comCtrl) {
-      setIdsSelecionados((prev) =>
-        prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-      );
+      setIdsSelecionados((prev) => {
+
+        const base = prev.length === 0 && palavraSelecionadaId && palavraSelecionadaId !== id
+          ? [palavraSelecionadaId]
+          : prev;
+
+        return base.includes(id) ? base.filter((x) => x !== id) : [...base, id];
+      });
     } else {
       setPalavraSelecionadaId(id);
       setIdsSelecionados([]);
     }
-  }, []);
+  }, [palavraSelecionadaId]);
 
   function alternarModoEdicao(novoModo) {
     setModoEdicao(novoModo);
@@ -831,6 +842,15 @@ export default function App() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
             <h2 className="app-title" style={{ margin: 0 }}>{projeto.nome}</h2>
             <div style={{ display: 'flex', gap: '10px' }}>
+
+              <button
+                className={`btn ${mostrarEditorSrt ? 'btn--primary' : ''}`}
+                onClick={() => setMostrarEditorSrt(!mostrarEditorSrt)}
+                style={{ padding: '8px 16px', fontWeight: 600, borderColor: 'var(--accent-amber)' }}
+              >
+                {mostrarEditorSrt ? 'Fechar Editor SRT' : 'Editar Legenda'}
+              </button>
+
               <button
                 className={`btn ${mostrarSincronizacao ? 'btn--primary' : ''}`}
                 onClick={() => setMostrarSincronizacao(!mostrarSincronizacao)}
@@ -839,18 +859,13 @@ export default function App() {
                 {mostrarSincronizacao ? 'Fechar Sincronização' : 'Sincronização Automática'}
               </button>
 
-              <button className="btn" onClick={() => setTelaAtual(TELA_TIMELINE)}>
+              <button className="btn" onClick={() => setTelaAtual(TELA_TIMELINE)} style={{ padding: '8px 16px', fontWeight: 600, borderColor: 'var(--accent-amber)' }}>
                 Abrir Timeline →
               </button>
             </div>
           </div>
 
-          <button
-            className={`btn ${mostrarEditorSrt ? 'btn--primary' : ''}`}
-            onClick={() => setMostrarEditorSrt(!mostrarEditorSrt)}
-          >
-            {mostrarEditorSrt ? 'Fechar Editor SRT' : 'Editor de Legenda'}
-          </button>
+
 
           {mostrarEditorSrt && (
             <PainelEditorSrt
@@ -927,6 +942,7 @@ export default function App() {
                   palavraSelecionadaId={palavraSelecionadaId}
                   idsSelecionados={idsSelecionados}
                   aoSelecionarPalavra={aoSelecionarPalavra}
+                  aoLimparSelecao={aoLimparSelecao}
                   palavraAtivaAgoraId={estadoAtual?.palavraAtivaId || null}
                 />
               </div>
