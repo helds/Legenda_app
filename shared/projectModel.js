@@ -1,3 +1,22 @@
+// shared/projectModel.js
+//
+// CORREÇÃO: este arquivo era escrito com `export function ...` (sintaxe
+// ESM), mas o package.json da raiz do projeto não declara
+// `"type": "module"` — então o Node, ao carregar este arquivo via
+// require() (como server/index.js fazia), detecta a sintaxe ESM e
+// reprocessa o módulo automaticamente, emitindo o warning:
+//
+//   [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file://...
+//   is not specified and it doesn't parse as CommonJS.
+//
+// Isso não quebra a aplicação (o servidor sobe normalmente), mas tem
+// overhead de performance e é sintoma de inconsistência: os outros
+// módulos de shared/ (srtParser.js, silabizador.js) já são CommonJS.
+// Convertendo este arquivo também para CommonJS (module.exports),
+// eliminamos o warning e podemos voltar a usar um require() síncrono
+// normal no server, em vez do import() dinâmico assíncrono que existia
+// como contorno em server/index.js.
+
 export function criarEstiloPadrao() {
   return {
     fonte: 'Roboto Flex',
@@ -13,7 +32,7 @@ export function criarEstiloPadrao() {
     duracaoTransicaoMs: 120,
     posicaoY: 0.85,
     modoRevelacao: 'silaba',
-    
+
   };
 }
 
@@ -207,19 +226,3 @@ export function corDaPalavraPorVolume(palavra, volumeReferencia) {
   const { volumeDbMin, volumeDbMedia, volumeDbMax } = volumeReferencia;
   return corPorVolume(palavra.volumeDb, volumeDbMin, volumeDbMedia, volumeDbMax);
 }
-
-// NOTA sobre sistema de módulos: este arquivo é CommonJS puro (usado
-// pelo server via `require`). Para o client (Vite/ESM) usar as mesmas
-// funções sem duplicar lógica, importe assim (Vite faz a interop de
-// CJS -> ESM automaticamente para módulos locais):
-//
-//   import projectModel from '../../../shared/projectModel';
-//   const cor = projectModel.corDaPalavraPorVolume(palavra, projeto.volumeReferencia);
-//
-// ou, se preferir desestruturar:
-//
-//   import * as projectModel from '../../../shared/projectModel';
-//   const { corDaPalavraPorVolume } = projectModel;
-//
-// (ver client/src/components/TelaTimeline.jsx, que já faz isso.)
-

@@ -8,9 +8,14 @@ import { ListaPalavras } from './components/ListaPalavras';
 import { PainelPropriedades } from './components/PainelPropriedades';
 import { PainelExportacao } from './components/PainelExportacao';
 import { PainelSincronizacaoAudio } from './components/PainelSincronizacaoAudio';
+import { PainelEditorSrt } from './components/PainelEditorSrt';
 import { TelaTimeline } from './components/TelaTimeline';
-import { calcularEstadoNoTempo } from '../../shared/projectModel'; // ajuste path
-
+// NOTA: shared/projectModel.js é CommonJS. Neste ambiente o Vite expõe
+// apenas os named exports deste arquivo para o navegador (não existe um
+// "default" para importar) — então o named import direto abaixo é o
+// padrão correto, e é o mesmo já usado com sucesso em TelaTimeline.jsx
+// para este mesmo arquivo.
+import * as projectModel from '../../shared/projectModel';
 
 const FPS = 30;
 
@@ -210,6 +215,17 @@ const LIMIAR_JUNCAO_SEGUNDOS = 0.02;
 // direita ao mesmo tempo, como no editor de junções do DaVinci Resolve.
 // Só deve ser chamado quando as duas palavras realmente estão encostadas
 // (ver LIMIAR_JUNCAO_SEGUNDOS).
+//
+// CORREÇÃO: esta função é uma função utilitária pura, fora do componente
+// React — hooks (useState/useCallback) NUNCA podem ser chamados aqui.
+// Uma versão anterior tinha `const [mostrarEditorSrt, setMostrarEditorSrt]
+// = useState(false)` e `calcularEstadoNoTempo(projeto, tempoAtualSegundos)`
+// coladas no meio desta função, referenciando `projeto`/`tempoAtualSegundos`
+// que nem existem neste escopo. Isso quebrava o parse/execução do módulo
+// e fazia `mostrarEditorSrt`/`setMostrarEditorSrt` nunca existirem onde o
+// JSX do componente App tenta usá-las — daí o
+// "ReferenceError: mostrarEditorSrt is not defined". Esse estado agora
+// vive só dentro do componente App, ver mais abaixo.
 function aplicarResizeJuncao(blocos, { palavraEsquerdaId, palavraDireitaId, novoTempo, duracaoMinima }) {
   // Limites: o ponto de junção não pode passar do início da esquerda nem
   // do fim da direita, sempre respeitando a duração mínima de cada uma.
@@ -225,8 +241,6 @@ function aplicarResizeJuncao(blocos, { palavraEsquerdaId, palavraDireitaId, novo
 
   const novoPonto = Math.max(limiteInferior, Math.min(novoTempo, limiteSuperior));
   const pontoArredondado = Number(novoPonto.toFixed(3));
-  const [mostrarEditorSrt, setMostrarEditorSrt] = useState(false);
-  const estadoAtual = calcularEstadoNoTempo(projeto, tempoAtualSegundos);
 
   return blocos.map((bloco) => {
     const palavras = (bloco.palavras || []).map((p) => {
@@ -244,6 +258,16 @@ function aplicarResizeJuncao(blocos, { palavraEsquerdaId, palavraDireitaId, novo
 // janela de tempo seja invadida pelo novo intervalo é recortada
 // proporcionalmente à área coberta: se a sobreposição consome a palavra
 // inteira, ela é removida; se cobre só uma ponta, essa ponta é cortada.
+//
+// CORREÇÃO: assim como em aplicarResizeJuncao acima, esta é uma função
+// utilitária pura fora do componente React. Uma versão anterior tinha um
+// `useCallback` (`alterarTempoDaLinha`) declarado DENTRO de um loop `for`
+// no meio desta função — hooks nunca podem ser chamados condicionalmente
+// ou dentro de loops, e muito menos fora de um componente/hook customizado.
+// Essa declaração foi removida; a lógica equivalente já existe como
+// `aplicarResizeBlocoComAdaptacao` (chamada de dentro do componente App
+// via `setProjeto`, se/quando precisar editar o tempo de um bloco pela
+// lista/editor SRT).
 function aplicarMoverPalavraComCorte(blocos, { palavraId, novoInicio, novoFim, duracaoMinima }) {
   const inicioAlvo = Math.min(novoInicio, novoFim - duracaoMinima);
   const fimAlvo = Math.max(novoFim, inicioAlvo + duracaoMinima);
@@ -275,20 +299,6 @@ function aplicarMoverPalavraComCorte(blocos, { palavraId, novoInicio, novoFim, d
 
       const pInicio = palavra.inicio;
       const pFim = palavra.fim;
-
-      const alterarTempoDaLinha = useCallback((blocoId, novoInicio, novoFim) => {
-        setProjeto((projetoAtual) => {
-          if (!projetoAtual) return null;
-
-          const novosBlocos = aplicarResizeBlocoComAdaptacao(projetoAtual.blocos, {
-            blocoId,
-            novoInicio,
-            novoFim,
-          });
-
-          return { ...projetoAtual, blocos: novosBlocos };
-        });
-      }, []);
 
       const sobreposicaoInicio = Math.max(pInicio, inicioAlvo);
       const sobreposicaoFim = Math.min(pFim, fimAlvo);
@@ -365,6 +375,14 @@ export default function App() {
   const [estaTocando, setEstaTocando] = useState(false);
 
   const [mostrarSincronizacao, setMostrarSincronizacao] = useState(false);
+  // CORREÇÃO: este estado (controle do painel de editor de SRT usado no
+  // JSX abaixo) estava faltando aqui — uma cópia anterior dele tinha
+  // ficado presa (incorretamente, como chamada de hook) dentro da função
+  // utilitária `aplicarResizeJuncao`, fora de qualquer componente. Isso
+  // causava "ReferenceError: mostrarEditorSrt is not defined" ao
+  // renderizar o App, porque o identificador nunca era criado no escopo
+  // certo.
+  const [mostrarEditorSrt, setMostrarEditorSrt] = useState(false);
   const [alturaPainelFerramentas, setAlturaPainelFerramentas] = useState(300);
   const [estaArrastandoPainel, setEstaArrastandoPainel] = useState(false);
 
@@ -492,6 +510,24 @@ export default function App() {
       setProjeto(resultado.projeto);
     }
   }
+
+  function aoAtualizarProjeto(novoProjeto) {
+    setProjeto(novoProjeto);
+  }
+
+  // Permite editar o tempo de um bloco inteiro (com adaptação em cascata
+  // dos blocos vizinhos) a partir de outros pontos da UI, se necessário.
+  const alterarTempoDoBloco = useCallback((blocoId, novoInicio, novoFim) => {
+    setProjeto((projetoAtual) => {
+      if (!projetoAtual) return projetoAtual;
+      const novosBlocos = aplicarResizeBlocoComAdaptacao(projetoAtual.blocos, {
+        blocoId,
+        novoInicio,
+        novoFim,
+      });
+      return { ...projetoAtual, blocos: novosBlocos };
+    });
+  }, []);
 
   const aoRedimensionarPalavra = useCallback(
     ({ palavraId, lado, novoTempo, duracaoMinima }) => {
@@ -719,6 +755,10 @@ export default function App() {
     .map((bloco) => (bloco?.palavras || []).map((p) => p?.texto || '').join(' '))
     .join(' ');
 
+  // Estado (palavra ativa/progresso) calculado no tempo atual do Player,
+  // usado para destacar a palavra sendo falada agora na ListaPalavras.
+  const estadoAtual = projectModel.calcularEstadoNoTempo(projeto, tempoAtualSegundos);
+
   const slotAtivo = telaAtual === TELA_EDITOR ? slotEditor : null;
 
   const playerPortado = slotAtivo
@@ -811,6 +851,14 @@ export default function App() {
           >
             {mostrarEditorSrt ? 'Fechar Editor SRT' : 'Editor de Legenda'}
           </button>
+
+          {mostrarEditorSrt && (
+            <PainelEditorSrt
+              projeto={projeto}
+              projetoId={projetoId}
+              aoAtualizarProjeto={aoAtualizarProjeto}
+            />
+          )}
 
           {!urlVideo && (
             <p className="status-line status-line--info" style={{ margin: 0, flexShrink: 0 }}>

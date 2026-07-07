@@ -1,12 +1,20 @@
 // client/src/components/PainelEditorSrt.jsx
 import React, { useState, useEffect, useRef } from 'react';
-import { parseSRT, secondsToTimecode } from '../../../shared/srtParser';
+// NOTA: shared/srtParser.js é CommonJS (module.exports = { parseSRT,
+// secondsToTimecode, ... }). Uma tentativa anterior trocou isto para
+// "import srtParser from '...'" (default import), mas nesse ambiente o
+// Vite expõe APENAS os named exports deste arquivo para o navegador —
+// não existe um "default" — então o default import falhava com
+// "does not provide an export named 'default'". O named import direto
+// abaixo é o padrão correto aqui, e é o mesmo já usado com sucesso em
+// TelaTimeline.jsx para shared/projectModel.js.
+import * as srtParser from '../../../shared/srtParser';
 
 function blocosParaSrtTexto(blocos) {
   return (blocos || [])
     .map((bloco, i) => {
       const texto = (bloco.palavras || []).map((p) => p.texto).join(' ');
-      return `${i + 1}\n${secondsToTimecode(bloco.inicio)} --> ${secondsToTimecode(bloco.fim)}\n${texto}\n`;
+      return `${i + 1}\n${srtParser.secondsToTimecode(bloco.inicio)} --> ${srtParser.secondsToTimecode(bloco.fim)}\n${texto}\n`;
     })
     .join('\n');
 }
@@ -30,7 +38,7 @@ export function PainelEditorSrt({ projeto, projetoId, aoAtualizarProjeto }) {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       try {
-        const novosBlocos = parseSRT(novoTexto);
+        const novosBlocos = srtParser.parseSRT(novoTexto);
         // preserva estilo/ids das palavras já existentes por posição, se quiser
         ultimaOrigemFoiEdicaoLocal.current = true;
         fetch(`/api/projetos/${projetoId}/blocos`, {

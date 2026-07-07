@@ -1,7 +1,7 @@
 // client/src/components/ListaPalavras.jsx
 import React from 'react';
 
-export function ListaPalavras({ blocos, palavraSelecionadaId, idsSelecionados, aoSelecionarPalavra }) {
+export function ListaPalavras({ blocos, palavraSelecionadaId, idsSelecionados, palavraAtivaAgoraId, aoSelecionarPalavra }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, overflowY: 'auto' }}>
       {blocos.map((bloco) => (

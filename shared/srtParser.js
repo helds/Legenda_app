@@ -3,7 +3,7 @@
 // de palavras individuais, cada uma com seu próprio tempo de início/fim
 // calculado proporcionalmente ao número de caracteres.
 
-function timecodeToSeconds(tc) {
+export function timecodeToSeconds(tc) {
   // formato: HH:MM:SS,mmm
   const match = tc.trim().match(/(\d{2}):(\d{2}):(\d{2})[,.](\d{3})/);
   if (!match) throw new Error(`Timecode inválido: "${tc}"`);
@@ -16,7 +16,7 @@ function timecodeToSeconds(tc) {
   );
 }
 
-function secondsToTimecode(totalSeconds) {
+export function secondsToTimecode(totalSeconds) {
   const h = Math.floor(totalSeconds / 3600);
   const m = Math.floor((totalSeconds % 3600) / 60);
   const s = Math.floor(totalSeconds % 60);
@@ -29,13 +29,13 @@ function secondsToTimecode(totalSeconds) {
 // que aparecem em arquivos .srt exportados de editores de legenda. Sem
 // isso, pedaços de tag (ex: "<b><font") viram "palavras" e aparecem na
 // legenda renderizada.
-function removerTagsHtml(text) {
+export function removerTagsHtml(text) {
   return text.replace(/<[^>]*>/g, '');
 }
 
 // Quebra o bloco de texto em "tokens" de palavra, preservando pontuação
 // junto à palavra (ex: "Coruripe," continua um token só).
-function splitIntoWords(text) {
+export function splitIntoWords(text) {
   const cleaned = text.replace(/\s+/g, ' ').trim();
   if (!cleaned) return [];
   return cleaned.split(' ');
@@ -44,7 +44,7 @@ function splitIntoWords(text) {
 // Distribui o intervalo [inicio, fim] entre as palavras proporcionalmente
 // ao número de caracteres de cada uma. Espaços entre palavras não geram
 // tempo próprio — são absorvidos nas bordas de cada palavra.
-function distributeTiming(words, startSec, endSec) {
+export function distributeTiming(words, startSec, endSec) {
   const totalChars = words.reduce((sum, w) => sum + w.length, 0);
   if (totalChars === 0) return [];
 
@@ -83,7 +83,7 @@ function distributeTiming(words, startSec, endSec) {
 // Parser principal: recebe o conteúdo bruto do .srt (string) e retorna
 // um array de blocos, cada um já com suas palavras quebradas e
 // temporizadas.
-function parseSRT(srtContent) {
+export function parseSRT(srtContent) {
   // Normaliza quebras de linha e remove BOM se houver.
   const normalized = srtContent.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
 
@@ -141,7 +141,7 @@ function parseSRT(srtContent) {
 // em 01:00:00:00 (convenção comum em Premiere/Resolve/Avid para entrega
 // broadcast), onde as legendas saem deslocadas 1h em relação ao vídeo.
 // offsetSegundos negativo = subtrai tempo (ex: -3600 = "tira 1 hora").
-function aplicarOffset(blocos, offsetSegundos) {
+export function aplicarOffset(blocos, offsetSegundos) {
   if (!offsetSegundos) return blocos;
   return blocos.map((bloco) => ({
     ...bloco,
@@ -154,13 +154,3 @@ function aplicarOffset(blocos, offsetSegundos) {
     })),
   }));
 }
-
-module.exports = {
-  parseSRT,
-  timecodeToSeconds,
-  secondsToTimecode,
-  splitIntoWords,
-  distributeTiming,
-  removerTagsHtml,
-  aplicarOffset,
-};

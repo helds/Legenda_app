@@ -7,7 +7,7 @@ import { LegendaFlutuante } from './LegendaFlutuante';
 // import (`import { corDaPalavraPorVolume } from ...` falha em runtime
 // com "does not provide an export named"). Importamos o objeto inteiro
 // e pegamos a função dele.
-import { corDaPalavraPorVolume } from '../../../shared/projectModel';
+import * as projectModel from '../../../shared/projectModel';
 
 const PX_POR_SEGUNDO_BASE = 72;
 const ZOOM_MIN = 0.25;
@@ -93,7 +93,7 @@ function coletarPalavras(blocos) {
 // suficiente para contraste com texto claro), e mantém o esquema antigo
 // (claro/escuro conforme override) quando cai no fallback.
 function resolverCoresDoBlocoDePalavra(palavra, volumeReferencia) {
-  const corVolume = corDaPalavraPorVolume(palavra, volumeReferencia);
+  const corVolume = projectModel.corDaPalavraPorVolume(palavra, volumeReferencia);
   if (corVolume) {
     return { fundo: corVolume, texto: '#f5f4f0' };
   }
