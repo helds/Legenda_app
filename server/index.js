@@ -22,6 +22,7 @@ const {
   sincronizarAudioComTexto,
   adaptarAlignmentAoProjetoExistente,
 } = require('./audioSyncService');
+const { montarRotasWaveform } = require('./waveformRoutes');
 
 const PORT = process.env.PORT || 4000;
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
@@ -286,6 +287,24 @@ app.patch('/api/projetos/:id/estilo-padrao', (req, res) => {
   res.json({ id: req.params.id, projeto });
 });
 
+// Atualiza a guia de margens seguras (camada de referência visual do
+// editor — ver client/src/remotion/CaptionComposition.jsx e
+// PainelMargens.jsx). Não afeta o vídeo exportado: essa configuração só
+// é lida pelo <Player> do editor (via prop `modoPreview`), nunca pelo
+// pipeline de renderização final.
+app.patch('/api/projetos/:id/guia-margens', (req, res) => {
+  const projeto =
+    projetosEmMemoria.get(req.params.id) ||
+    carregarProjetoDoDisco(req.params.id);
+  if (!projeto) return res.status(404).json({ erro: 'Projeto não encontrado.' });
+
+  projeto.guiaMargens = { ...projeto.guiaMargens, ...req.body };
+  projetosEmMemoria.set(req.params.id, projeto);
+  salvarProjetoEmDisco(req.params.id, projeto);
+
+  res.json({ id: req.params.id, projeto });
+});
+
 // Atualiza o estilo individual (override) de uma palavra específica.
 app.patch('/api/projetos/:id/palavras/:palavraId', (req, res) => {
   const projeto =
@@ -436,8 +455,11 @@ app.post('/api/audio/sincronizar', async (req, res) => {
     res.status(500).json({ erro: 'Falha na sincroniza��o de �udio.', detalhe: err.message });
   }
 });
-// Dispara a exportação (delegado ao módulo Remotion — ver server/render.js)
-app.post('/api/projetos/:id/exportar', async (req, res) => {
+// Dispara a exportação (delegado ao módulo Remotion — ver server/render.js).
+// Responde IMEDIATAMENTE com { jobId }: a renderização roda em background
+// dentro do processo, e o progresso é consultado via polling na rota
+// GET /exportar/status abaixo (usada pelo PainelExportacao.jsx no client).
+app.post('/api/projetos/:id/exportar', (req, res) => {
   const projeto =
     projetosEmMemoria.get(req.params.id) ||
     carregarProjetoDoDisco(req.params.id);
@@ -447,18 +469,53 @@ app.post('/api/projetos/:id/exportar', async (req, res) => {
   // formato: 'mov-alpha' | 'png-sequence' | 'mp4-fundo-solido'
 
   try {
-    const { exportarProjeto } = require('./render');
-    const resultado = await exportarProjeto({
+    const { iniciarExportacao } = require('./render');
+    const jobId = iniciarExportacao({
       projeto,
       formato,
       corFundo,
       outputDir: EXPORTS_DIR,
     });
-    res.json(resultado);
+    // 202 Accepted: aceito, mas processado de forma assíncrona.
+    res.status(202).json({ jobId });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ erro: 'Falha na exportação.', detalhe: err.message });
+    res.status(500).json({ erro: 'Falha ao iniciar exportação.', detalhe: err.message });
   }
+});
+
+// Consultada via polling pelo client (PainelExportacao.jsx) enquanto a
+// exportação roda em background, para alimentar a barra de progresso e
+// o tempo estimado dentro do botão de exportar.
+app.get('/api/projetos/:id/exportar/status', (req, res) => {
+  const { jobId } = req.query;
+  if (!jobId || typeof jobId !== 'string') {
+    return res.status(400).json({ erro: 'Parâmetro "jobId" é obrigatório.' });
+  }
+
+  const { obterJob } = require('./render');
+  const job = obterJob(jobId);
+  if (!job) {
+    return res.status(404).json({ erro: 'Job de exportação não encontrado (pode ter expirado).' });
+  }
+
+  res.json({
+    progresso: job.progresso,
+    tempoRestanteSegundos: job.tempoRestanteSegundos,
+    concluido: job.concluido,
+    erro: job.erro || undefined,
+    ...(job.resultado || {}),
+  });
+});
+
+// Rotas de waveform (picos pré-computados + áudio extraído com Range) —
+// ver server/waveformRoutes.js e server/waveformService.js.
+// `carregarProjeto` (memória + disco) é usado em vez de
+// `carregarProjetoDoDisco` puro para cobrir também o caso de um projeto
+// recém-criado que ainda não foi persistido em disco.
+montarRotasWaveform(app, {
+  obterProjetoPorId: carregarProjeto,
+  uploadsDir: UPLOADS_DIR,
 });
 
 app.listen(PORT, () => {

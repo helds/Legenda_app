@@ -22,6 +22,107 @@ function resolverEstilo(estiloPadrao, overrideIndividual) {
   return { ...estiloPadrao, ...overrideIndividual };
 }
 
+// Guia de margens seguras — camada de referência visual (não impressa)
+// que ajuda a posicionar legendas dentro de uma área segura do quadro.
+// Todas as porcentagens de `guiaMargens` são relativas à ALTURA do
+// vídeo, inclusive a margem lateral (`margemLateral`) — decisão
+// deliberada pra manter a proporção da guia estável independente do
+// aspect ratio do projeto, em vez de usar % de largura pra margens
+// horizontais.
+//
+// IMPORTANTE (segurança contra vazar pro export): este componente só é
+// chamado quando `modoPreview` é true, e `modoPreview` só é passado pelo
+// <Player> do editor em App.jsx. O pipeline de renderização final
+// (@remotion/renderer, ver server/index.js) nunca passa essa prop, então
+// mesmo com `guiaMargens.ativo` salvo como true no projeto, a guia nunca
+// aparece no vídeo exportado — ela depende de DUAS condições, não só do
+// estado salvo no projeto.
+//
+// Empilhamento vertical, DE BAIXO PRA CIMA (colado na borda inferior do
+// vídeo, subindo em direção ao centro):
+//   1. espacamentoBordaInferior — encostado na borda inferior (roxo)
+//   2. alturaFala1              — logo acima da margem (VAZADO)
+//   3. distanciaEntreLinhas     — gap entre as duas falas (roxo)
+//   4. alturaFala2              — a mais próxima do centro (VAZADO, só se ativarFala2)
+//
+// X = soma dos quatro valores acima (a altura TOTAL da área de
+// trabalho, em %). Cada margem lateral tem largura igual a 2×X — ou
+// seja, se a área de trabalho ocupa 20% da altura do vídeo, cada
+// lateral (esquerda e direita) ocupa 40% da altura do vídeo, aplicado
+// horizontalmente como largura.
+function GuiaMargensSeguras({ guiaMargens }) {
+  // 1. Extraímos também o 'width' para poder calcular o modo manual da margem lateral
+  const { height, width } = useVideoConfig(); 
+
+  if (!guiaMargens?.ativo) return null;
+
+  const paraPx = (valorPercentual) => ((Number(valorPercentual) || 0) / 100) * height;
+
+  const espacamentoBordaInferiorPx = paraPx(guiaMargens.espacamentoBordaInferior ?? 7.5);
+  const alturaFala1Px = paraPx(guiaMargens.alturaFala1 ?? 5);
+  const distanciaEntreLinhasPx = paraPx(guiaMargens.distanciaEntreLinhas ?? 2.5);
+  const ativarFala2 = guiaMargens.ativarFala2 ?? true;
+  const alturaFala2Px = ativarFala2 ? paraPx(guiaMargens.alturaFala2 ?? 5) : 0;
+
+  const xPx = espacamentoBordaInferiorPx + alturaFala1Px + distanciaEntreLinhasPx + alturaFala2Px;
+  
+  // 2. Lógica corrigida do Slider:
+  // Verifica se o usuário tirou do modo "auto" e puxou o slider manual (valor >= 0)
+  const lateralEmModoManual = typeof guiaMargens.margemLateralPercentual === 'number' && guiaMargens.margemLateralPercentual >= 0;
+  
+  const margemLateralPx = lateralEmModoManual 
+    ? (guiaMargens.margemLateralPercentual / 100) * width // Usa a % da LARGURA definida no slider manual
+    : 2 * xPx; // Fallback para a Lógica Automática (2x Altura da área de trabalho)
+
+  const corPreenchimentoRoxo = 'rgba(140, 40, 220, 0.55)';
+  const corContorno = 'rgba(180, 60, 255, 0.9)';
+
+  let acumuladoDesdeAbaixo = 0;
+  const segmentoBordaInferior = { bottom: acumuladoDesdeAbaixo, altura: espacamentoBordaInferiorPx };
+  acumuladoDesdeAbaixo += espacamentoBordaInferiorPx;
+  const segmentoFala1 = { bottom: acumuladoDesdeAbaixo, altura: alturaFala1Px };
+  acumuladoDesdeAbaixo += alturaFala1Px;
+  const segmentoGap = { bottom: acumuladoDesdeAbaixo, altura: distanciaEntreLinhasPx };
+  acumuladoDesdeAbaixo += distanciaEntreLinhasPx;
+  const segmentoFala2 = { bottom: acumuladoDesdeAbaixo, altura: alturaFala2Px };
+
+  const estiloFaixaRoxa = ({ bottom, altura }) => ({
+    position: 'absolute',
+    left: margemLateralPx,
+    right: margemLateralPx,
+    bottom,
+    height: Math.max(0, altura),
+    backgroundColor: corPreenchimentoRoxo,
+    boxSizing: 'border-box',
+  });
+
+  const estiloFaixaVazada = ({ bottom, altura }) => ({
+    position: 'absolute',
+    left: margemLateralPx,
+    right: margemLateralPx,
+    bottom,
+    height: Math.max(0, altura),
+    border: `1px dashed ${corContorno}`,
+    boxSizing: 'border-box',
+  });
+
+  return (
+    <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+      {margemLateralPx > 0 && (
+        <>
+          <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: margemLateralPx, backgroundColor: corPreenchimentoRoxo }} />
+          <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: margemLateralPx, backgroundColor: corPreenchimentoRoxo }} />
+        </>
+      )}
+
+      {espacamentoBordaInferiorPx > 0 && <div style={estiloFaixaRoxa(segmentoBordaInferior)} />}
+      {alturaFala1Px > 0 && <div style={estiloFaixaVazada(segmentoFala1)} />}
+      {distanciaEntreLinhasPx > 0 && <div style={estiloFaixaRoxa(segmentoGap)} />}
+      {ativarFala2 && alturaFala2Px > 0 && <div style={estiloFaixaVazada(segmentoFala2)} />}
+    </div>
+  );
+}
+
 // CORREÇÃO (bugfix preview sumindo): `texto` pode chegar undefined/null/
 // não-string vindo de blocos gerados pela sincronização de áudio
 // (WhisperX), caso alguma entrada do alignment não traga o campo `texto`
@@ -42,8 +143,6 @@ function dividirEmUnidades(texto, modoRevelacao) {
 }
 
 function Palavra({ palavra, estiloPadrao, tempoAtualSegundos }) {
-  // CORREÇÃO: palavra malformada (sem texto válido) não deve quebrar o
-  // resto do bloco — apenas essa palavra simplesmente não renderiza nada.
   if (!palavra || typeof palavra.texto !== 'string') {
     return null;
   }
@@ -54,17 +153,20 @@ function Palavra({ palavra, estiloPadrao, tempoAtualSegundos }) {
   const inicioSeguro = typeof inicio === 'number' ? inicio : 0;
   const fimSeguro = typeof fim === 'number' ? fim : inicioSeguro;
 
-  const dentroDaJanelaAtiva = tempoAtualSegundos >= inicioSeguro && tempoAtualSegundos <= fimSeguro;
-
   const modoRevelacao = estilo.modoRevelacao || 'palavra';
   const unidades = dividirEmUnidades(texto, modoRevelacao);
   const totalUnidades = unidades.length || 1;
 
   const duracao = fimSeguro - inicioSeguro;
 
-  // VALORES PADRÕES ALINHADOS COM O DESIGN SYSTEM V1.0
+  // Tempo do "pulo" físico da letra
   const duracaoTransicaoMs = estilo.duracaoTransicaoMs ?? 120;
   const duracaoTransicaoSeg = duracaoTransicaoMs / 1000;
+  
+  // NOVO: Garantimos que o "fade" da cor demore no mínimo 250ms (0.25s) 
+  // para ser visualmente mais suave, independente de quão rápido é o pulo.
+  const duracaoFadeCorSeg = Math.max(duracaoTransicaoSeg, 0.25);
+
   const corBase = estilo.corBase ?? '#FFFFFF';
   const corDestaque = estilo.corDestaque ?? '#FFCC00';
   const opacidadeAntesDoDestaque = estilo.opacidadeAntesDoDestaque ?? 0.90;
@@ -83,16 +185,6 @@ function Palavra({ palavra, estiloPadrao, tempoAtualSegundos }) {
         flexWrap: 'nowrap',
         whiteSpace: 'pre',
         fontSize: `${tamanhoBase}px`,
-        fontFamily: estilo.fonte || 'sans-serif',
-        // Se estiloSoNoDestaque estiver ativo, o estilo base ignora o peso/itálico customizado da palavra
-        fontWeight: estilo.estiloSoNoDestaque && !dentroDaJanelaAtiva
-          ? (estiloPadrao.pesoFonte ?? 400)
-          : pesoFonte,
-
-        fontStyle: estilo.estiloSoNoDestaque && !dentroDaJanelaAtiva
-          ? ((estiloPadrao.italico ?? false) ? 'italic' : 'normal')
-          : (italico ? 'italic' : 'normal'),
-
         textTransform: estilo.caixaAlta ? 'uppercase' : 'none',
         letterSpacing: `${estilo.espacamentoLetras ?? 0}px`,
       }}
@@ -104,9 +196,12 @@ function Palavra({ palavra, estiloPadrao, tempoAtualSegundos }) {
         const inicioUnidade = inicioSeguro + indexUnidade * tempoPorUnidade;
         const fimUnidade = inicioUnidade + tempoPorUnidade;
 
-        // Efeito Pop de Pulo e Escala usando Math.sin
+        const estaDestacada = tempoAtualSegundos >= inicioUnidade && tempoAtualSegundos <= fimUnidade;
+        const jaChegou = tempoAtualSegundos >= inicioUnidade;
+
+        // 1. CÁLCULO DO PULO (Tamanho e Altura) - Continua rápido
         let progressaoPulo = 0;
-        if (tempoAtualSegundos >= inicioUnidade && tempoAtualSegundos <= fimUnidade) {
+        if (estaDestacada) {
           const tempoDecorrido = tempoAtualSegundos - inicioUnidade;
           if (tempoDecorrido < duracaoTransicaoSeg) {
             progressaoPulo = Math.sin((tempoDecorrido / duracaoTransicaoSeg) * Math.PI);
@@ -116,25 +211,48 @@ function Palavra({ palavra, estiloPadrao, tempoAtualSegundos }) {
         const escalaAtual = 1 + (escalaPulo - 1) * progressaoPulo;
         const transladarY = - (tamanhoBase * elevacaoPulo) * progressaoPulo;
 
-        // Interpolação da Cor e Opacidade Dinâmica (Read-Ahead Ativo)
-        let corAtual = corBase;
-        let opacidadeAtual = opacidadeAntesDoDestaque;
-
-        if (tempoAtualSegundos >= inicioUnidade) {
-          corAtual = corDestaque;
-          opacidadeAtual = 1.0;
+        // 2. CÁLCULO DA COR (Fade Suave) - Calculado perfeitamente frame a frame
+        let progressoCor = 0;
+        if (jaChegou) {
+          const tempoDecorridoCor = tempoAtualSegundos - inicioUnidade;
+          if (tempoDecorridoCor < duracaoFadeCorSeg) {
+            // Curva ease-out matemática (desacelera no final da transição)
+            const t = tempoDecorridoCor / duracaoFadeCorSeg;
+            progressoCor = t * (2 - t); 
+          } else {
+            progressoCor = 1;
+          }
         }
+
+        const fonteAtual = (estiloSoNoDestaque && !jaChegou)
+          ? (estiloPadrao.fonte || 'sans-serif')
+          : (estilo.fonte || 'sans-serif');
+
+        const pesoAtual = (estiloSoNoDestaque && !jaChegou)
+          ? (estiloPadrao.pesoFonte ?? 400)
+          : pesoFonte;
+
+        const italicoAtual = (estiloSoNoDestaque && !jaChegou)
+          ? ((estiloPadrao.italico ?? false) ? 'italic' : 'normal')
+          : (italico ? 'italic' : 'normal');
+
+        // MISTURA DE CORES: Interpola o laranja claro pro laranja forte
+        const corAtual = jaChegou ? corDestaque : corBase;
+    
+        const opacidadeAtual = jaChegou ? 1.0 : opacidadeAntesDoDestaque;
 
         return (
           <span
             key={indexUnidade}
             style={{
               display: 'inline-block',
+              fontFamily: fonteAtual,
+              fontWeight: pesoAtual,
+              fontStyle: italicoAtual,
               color: corAtual,
               opacity: opacidadeAtual,
               transform: `scale(${escalaAtual}) translateY(${transladarY}px)`,
               transformOrigin: 'center bottom',
-              transition: `color ${duracaoTransicaoMs}ms ease, opacity ${duracaoTransicaoMs}ms ease`,
             }}
           >
             {textoUnidade}
@@ -206,7 +324,7 @@ function useCarregarFontesCustomizadas(fontes) {
   }, [chaveEstavel]);
 }
 
-export function CaptionComposition({ projeto, corFundo, videoPreviewSrc }) {
+export function CaptionComposition({ projeto, corFundo, videoPreviewSrc, guiaMargens, modoPreview = false }) {
   const [videoPreviewAspectRatio, setVideoPreviewAspectRatio] = useState(null);
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -296,8 +414,27 @@ export function CaptionComposition({ projeto, corFundo, videoPreviewSrc }) {
         </AbsoluteFill>
       )}
 
-      <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+<div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
         {blocoAtivo && (
+          // CORREÇÃO (largura máxima presa mesmo em 100%):
+          // Antes, um único <div> tinha `width: 'fit-content'` +
+          // `maxWidth: '<slider>%'` ao mesmo tempo. Com `width: fit-content`,
+          // o navegador calcula a largura INTRÍNSECA do texto primeiro — se
+          // essa largura já é menor que o teto do `maxWidth` (o que é comum
+          // com blocos curtos de karaokê), o `maxWidth` nunca chega a ser
+          // acionado, e o texto nunca quebra linha, não importa o valor do
+          // slider. Por isso 100% "não fazia diferença": o texto raramente
+          // era largo o bastante pra esbarrar no teto.
+          //
+          // A correção usa DOIS containers:
+          // - `containerLargura` (externo): tem uma `width` REAL igual ao
+          //   valor do slider (não `fit-content`). É esse elemento que
+          //   define contra o que o texto deve quebrar linha — agora o
+          //   slider sempre tem efeito, inclusive em 100%.
+          // - `containerFundo` (interno): continua `width: fit-content`,
+          //   então o retângulo colorido do fundo (`comFundo`) abraça
+          //   apenas as linhas de texto realmente ocupadas, exatamente
+          //   como antes — um texto curto não "estica" o fundo até 100%.
           <div
             style={{
               position: 'absolute',
@@ -305,32 +442,43 @@ export function CaptionComposition({ projeto, corFundo, videoPreviewSrc }) {
               top: `${posicaoY * 100}%`,
               transform: 'translate(-50%, -50%)',
               display: 'flex',
-              flexWrap: 'wrap',
-              gap: `${estiloPadrao.espacamentoPalavras ?? 0.4}em`,
+              alignItems: 'center',
               justifyContent: 'center',
               width: `${estiloPadrao.larguraContainer ?? 45}%`,
-              maxWidth: `${estiloPadrao.larguraContainer ?? 45}%`,
               height: estiloPadrao.alturaContainer ? `${estiloPadrao.alturaContainer}%` : 'auto',
-              lineHeight: estiloPadrao.espacamentoLinhas ?? 1.2,
-              paddingTop: `${estiloPadrao.margemCima ?? 0}px`,
-              paddingBottom: `${estiloPadrao.margemBaixo ?? 0}px`,
-              backgroundColor: corFundoBox,
-              padding: paddingFundo,
-              borderRadius: borderRadiusFundo,
-              transition: 'background-color 0.15s ease'
             }}
           >
-            {palavrasDoBloco.map((palavra, i) => (
-              <Palavra
-                key={palavra?.id ?? i}
-                palavra={palavra}
-                estiloPadrao={estiloPadrao}
-                tempoAtualSegundos={tempoAtualSegundos}
-              />
-            ))}
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: `${estiloPadrao.espacamentoPalavras ?? 0.4}em`,
+                justifyContent: 'center',
+                width: 'fit-content',
+                maxWidth: '100%',
+                lineHeight: estiloPadrao.espacamentoLinhas ?? 1.2,
+                paddingTop: `${estiloPadrao.margemCima ?? 0}px`,
+                paddingBottom: `${estiloPadrao.margemBaixo ?? 0}px`,
+                backgroundColor: corFundoBox,
+                padding: paddingFundo,
+                borderRadius: borderRadiusFundo,
+                transition: 'background-color 0.15s ease'
+              }}
+            >
+              {palavrasDoBloco.map((palavra, i) => (
+                <Palavra
+                  key={palavra?.id ?? i}
+                  palavra={palavra}
+                  estiloPadrao={estiloPadrao}
+                  tempoAtualSegundos={tempoAtualSegundos}
+                />
+              ))}
+            </div>
           </div>
         )}
       </div>
+
+      {modoPreview && <GuiaMargensSeguras guiaMargens={guiaMargens} />}
     </div>
   );
 }

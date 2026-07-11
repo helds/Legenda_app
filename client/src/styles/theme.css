@@ -348,7 +348,6 @@ input[type="color"]::-webkit-color-swatch { border: none; border-radius: 3px; }
   background: var(--bg-inset);
   color: var(--text-secondary);
   cursor: pointer;
-  transition: all var(--transition-fast);
 }
 .word-chip:hover { border-color: var(--text-tertiary); color: var(--text-primary); }
 

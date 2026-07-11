@@ -1,20 +1,17 @@
 // client/src/App.jsx
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Player } from '@remotion/player';
 import { CaptionComposition } from './remotion/CaptionComposition';
 import { TelaImportacao } from './components/TelaImportacao';
 import { ListaPalavras } from './components/ListaPalavras';
 import { PainelPropriedades } from './components/PainelPropriedades';
+import { PainelMargens } from './components/PainelMargens';
 import { PainelExportacao } from './components/PainelExportacao';
 import { PainelSincronizacaoAudio } from './components/PainelSincronizacaoAudio';
 import { PainelEditorSrt } from './components/PainelEditorSrt';
 import { TelaTimeline } from './components/TelaTimeline';
-// NOTA: shared/projectModel.js é CommonJS. Neste ambiente o Vite expõe
-// apenas os named exports deste arquivo para o navegador (não existe um
-// "default" para importar) — então o named import direto abaixo é o
-// padrão correto, e é o mesmo já usado com sucesso em TelaTimeline.jsx
-// para este mesmo arquivo.
+
 import * as projectModel from '../../shared/projectModel';
 
 const FPS = 30;
@@ -73,7 +70,6 @@ class PreviewErrorBoundary extends React.Component {
   }
 }
 
-// Função auxiliar: Redimensiona um bloco e suas palavras proporcionalmente
 function redimensionarBlocoEPalavras(bloco, novoInicio, novoFim) {
   const duracaoAntiga = bloco.fim - bloco.inicio;
   const duracaoNova = novoFim - novoInicio;
@@ -88,55 +84,43 @@ function redimensionarBlocoEPalavras(bloco, novoInicio, novoFim) {
   return { ...bloco, inicio: novoInicio, fim: novoFim, palavras };
 }
 
-// Função Principal: Aplica o redimensionamento e adapta os blocos vizinhos
 function aplicarResizeBlocoComAdaptacao(blocos, { blocoId, novoInicio, novoFim }) {
   const indexAlvo = blocos.findIndex((b) => b.id === blocoId);
   if (indexAlvo === -1) return blocos;
 
   let novosBlocos = [...blocos];
-
-  // GAP é o espaço entre blocos. Deixei 0, mas se quiser que o bloco A fique 12-13.9 
-  // e o B 14-20, você pode colocar GAP = 0.1, por exemplo.
   const GAP = 0;
 
-  // 1. Evita inversão de tempo (garante duração mínima de 0.1s para o bloco editado)
   const inicioSeguro = Math.min(novoInicio, novoFim - 0.1);
   const fimSeguro = Math.max(novoFim, novoInicio + 0.1);
 
-  // 2. Redimensiona o bloco alvo (o que o usuário editou no input)
   novosBlocos[indexAlvo] = redimensionarBlocoEPalavras(novosBlocos[indexAlvo], inicioSeguro, fimSeguro);
 
-  // 3. Adapta os blocos ANTERIORES em cascata (se o novo início invadir o espaço deles)
   for (let i = indexAlvo - 1; i >= 0; i--) {
     const blocoAnterior = novosBlocos[i];
-    const blocoPosterior = novosBlocos[i + 1]; // Bloco que acabou de ser empurrado
+    const blocoPosterior = novosBlocos[i + 1];
 
-    // Se o fim do bloco de trás invade o início do bloco da frente...
     if (blocoAnterior.fim > blocoPosterior.inicio - GAP) {
       const novoFimAdaptado = blocoPosterior.inicio - GAP;
-      // Garante que o bloco anterior não desapareça (duração mínima 0.1s)
       const novoInicioAdaptado = Math.min(blocoAnterior.inicio, novoFimAdaptado - 0.1);
 
       novosBlocos[i] = redimensionarBlocoEPalavras(blocoAnterior, novoInicioAdaptado, novoFimAdaptado);
     } else {
-      break; // Se não invadiu este bloco, não vai invadir os que estão antes dele
+      break;
     }
   }
 
-  // 4. Adapta os blocos SEGUINTES em cascata (se o novo fim invadir o espaço deles)
   for (let i = indexAlvo + 1; i < novosBlocos.length; i++) {
     const blocoProximo = novosBlocos[i];
-    const blocoAnterior = novosBlocos[i - 1]; // Bloco que acabou de ser empurrado
+    const blocoAnterior = novosBlocos[i - 1];
 
-    // Se o início do bloco da frente for atropelado pelo fim do bloco de trás...
     if (blocoProximo.inicio < blocoAnterior.fim + GAP) {
       const novoInicioAdaptado = blocoAnterior.fim + GAP;
-      // Garante que o bloco da frente não desapareça
       const novoFimAdaptado = Math.max(blocoProximo.fim, novoInicioAdaptado + 0.1);
 
       novosBlocos[i] = redimensionarBlocoEPalavras(blocoProximo, novoInicioAdaptado, novoFimAdaptado);
     } else {
-      break; // Se não invadiu este bloco, não vai invadir os que estão depois dele
+      break;
     }
   }
 
@@ -163,15 +147,7 @@ function calcularDuracaoFrames(blocos) {
   return Math.ceil((max + 0.5) * FPS) || FPS * 5;
 }
 
-// Redimensiona APENAS a palavra alvo, sem alterar as vizinhas. Ela pode
-// crescer livremente pelo espaço vazio da timeline, só é limitada quando
-// encosta de fato no início/fim de outra palavra (evita sobrepor).
-// Isto é o comportamento "dentro do bloco": cada retângulo se comporta
-// como independente dos outros.
 function aplicarResizeIndividual(blocos, { palavraId, lado, novoTempo, duracaoMinima }) {
-  // Junta todas as palavras (de todos os blocos) para achar corretamente
-  // quem é a vizinha mais próxima no tempo, já que a vizinha "de fato" pode
-  // estar em outro bloco.
   const todasPalavras = blocos.flatMap((b) => b.palavras || []);
 
   return blocos.map((bloco) => {
@@ -182,8 +158,6 @@ function aplicarResizeIndividual(blocos, { palavraId, lado, novoTempo, duracaoMi
     const alvo = palavras[indice];
 
     if (lado === 'direita') {
-      // Vizinha mais próxima à direita (qualquer palavra cujo início seja
-      // >= fim atual do alvo), para não invadi-la.
       const vizinhasDepois = todasPalavras
         .filter((p) => p.id !== palavraId && p.inicio >= alvo.fim - 0.0005)
         .sort((a, b) => a.inicio - b.inicio);
@@ -201,34 +175,14 @@ function aplicarResizeIndividual(blocos, { palavraId, lado, novoTempo, duracaoMi
       alvo.inicio = Number(novoInicio.toFixed(3));
     }
 
-    return { ...bloco, palavras };
+    const novoInicioBloco = palavras[0]?.inicio ?? bloco.inicio;
+    return { ...bloco, palavras, inicio: novoInicioBloco };
   });
 }
 
-// Limiar de distância (em segundos) abaixo do qual duas palavras vizinhas
-// são consideradas "coladas" e, portanto, redimensionáveis em conjunto pela
-// alça de junção (comportamento estilo DaVinci Resolve).
 const LIMIAR_JUNCAO_SEGUNDOS = 0.02;
 
-// Redimensiona a JUNÇÃO entre duas palavras coladas: arrastar o ponto de
-// contato move o fim da palavra da esquerda e o início da palavra da
-// direita ao mesmo tempo, como no editor de junções do DaVinci Resolve.
-// Só deve ser chamado quando as duas palavras realmente estão encostadas
-// (ver LIMIAR_JUNCAO_SEGUNDOS).
-//
-// CORREÇÃO: esta função é uma função utilitária pura, fora do componente
-// React — hooks (useState/useCallback) NUNCA podem ser chamados aqui.
-// Uma versão anterior tinha `const [mostrarEditorSrt, setMostrarEditorSrt]
-// = useState(false)` e `calcularEstadoNoTempo(projeto, tempoAtualSegundos)`
-// coladas no meio desta função, referenciando `projeto`/`tempoAtualSegundos`
-// que nem existem neste escopo. Isso quebrava o parse/execução do módulo
-// e fazia `mostrarEditorSrt`/`setMostrarEditorSrt` nunca existirem onde o
-// JSX do componente App tenta usá-las — daí o
-// "ReferenceError: mostrarEditorSrt is not defined". Esse estado agora
-// vive só dentro do componente App, ver mais abaixo.
 function aplicarResizeJuncao(blocos, { palavraEsquerdaId, palavraDireitaId, novoTempo, duracaoMinima }) {
-  // Limites: o ponto de junção não pode passar do início da esquerda nem
-  // do fim da direita, sempre respeitando a duração mínima de cada uma.
   let limiteInferior = -Infinity;
   let limiteSuperior = Infinity;
 
@@ -248,31 +202,16 @@ function aplicarResizeJuncao(blocos, { palavraEsquerdaId, palavraDireitaId, novo
       if (p.id === palavraDireitaId) return { ...p, inicio: pontoArredondado };
       return p;
     });
-    return { ...bloco, palavras };
+
+    const novoInicioBloco = palavras[0]?.inicio ?? bloco.inicio;
+    return { ...bloco, palavras, inicio: novoInicioBloco };
   });
 }
 
-// Move uma palavra livremente para um novo intervalo [novoInicio, novoFim],
-// sem manter contato obrigatório com as vizinhas (ao contrário do resize por
-// alça, que é "ripple"). Qualquer palavra (do mesmo bloco ou de outro) cuja
-// janela de tempo seja invadida pelo novo intervalo é recortada
-// proporcionalmente à área coberta: se a sobreposição consome a palavra
-// inteira, ela é removida; se cobre só uma ponta, essa ponta é cortada.
-//
-// CORREÇÃO: assim como em aplicarResizeJuncao acima, esta é uma função
-// utilitária pura fora do componente React. Uma versão anterior tinha um
-// `useCallback` (`alterarTempoDaLinha`) declarado DENTRO de um loop `for`
-// no meio desta função — hooks nunca podem ser chamados condicionalmente
-// ou dentro de loops, e muito menos fora de um componente/hook customizado.
-// Essa declaração foi removida; a lógica equivalente já existe como
-// `aplicarResizeBlocoComAdaptacao` (chamada de dentro do componente App
-// via `setProjeto`, se/quando precisar editar o tempo de um bloco pela
-// lista/editor SRT).
 function aplicarMoverPalavraComCorte(blocos, { palavraId, novoInicio, novoFim, duracaoMinima }) {
   const inicioAlvo = Math.min(novoInicio, novoFim - duracaoMinima);
   const fimAlvo = Math.max(novoFim, inicioAlvo + duracaoMinima);
 
-  // Passo 1: aplica o novo intervalo na palavra movida.
   let blocosAtualizados = blocos.map((bloco) => {
     const indice = (bloco.palavras || []).findIndex((p) => p.id === palavraId);
     if (indice === -1) return bloco;
@@ -285,9 +224,6 @@ function aplicarMoverPalavraComCorte(blocos, { palavraId, novoInicio, novoFim, d
     return { ...bloco, palavras };
   });
 
-  // Passo 2: para cada outra palavra que se sobrepõe ao novo intervalo,
-  // recorta a área coberta. Palavras cuja sobra fique menor que a duração
-  // mínima são removidas.
   blocosAtualizados = blocosAtualizados.map((bloco) => {
     const palavrasFiltradas = [];
 
@@ -309,16 +245,13 @@ function aplicarMoverPalavraComCorte(blocos, { palavraId, novoInicio, novoFim, d
         continue;
       }
 
-      // Contida inteiramente pelo intervalo movido: apagar.
       if (inicioAlvo <= pInicio && fimAlvo >= pFim) {
-        continue; // remove a palavra
+        continue;
       }
 
-      // Sobreposição só na ponta esquerda da palavra existente (o bloco
-      // movido cobre o começo dela) -> encurta pela esquerda.
       if (inicioAlvo <= pInicio && fimAlvo < pFim) {
         const novoInicioPalavra = fimAlvo;
-        if (pFim - novoInicioPalavra < duracaoMinima) continue; // vira menor que o mínimo -> remove
+        if (pFim - novoInicioPalavra < duracaoMinima) continue;
         palavrasFiltradas.push({
           ...palavra,
           inicio: Number(novoInicioPalavra.toFixed(3)),
@@ -326,8 +259,6 @@ function aplicarMoverPalavraComCorte(blocos, { palavraId, novoInicio, novoFim, d
         continue;
       }
 
-      // Sobreposição só na ponta direita da palavra existente -> encurta
-      // pela direita.
       if (fimAlvo >= pFim && inicioAlvo > pInicio) {
         const novoFimPalavra = inicioAlvo;
         if (novoFimPalavra - pInicio < duracaoMinima) continue;
@@ -338,11 +269,6 @@ function aplicarMoverPalavraComCorte(blocos, { palavraId, novoInicio, novoFim, d
         continue;
       }
 
-      // Sobreposição no meio da palavra existente (o bloco movido "fura" o
-      // centro dela): ficamos com a parte esquerda restante, já que não dá
-      // para dividir uma única palavra em duas. Se a parte esquerda for
-      // menor que o mínimo, ficamos com a direita; se ambas forem menores
-      // que o mínimo, a palavra é removida.
       const restanteEsquerda = inicioAlvo - pInicio;
       const restanteDireita = pFim - fimAlvo;
       if (restanteEsquerda >= duracaoMinima) {
@@ -350,19 +276,69 @@ function aplicarMoverPalavraComCorte(blocos, { palavraId, novoInicio, novoFim, d
       } else if (restanteDireita >= duracaoMinima) {
         palavrasFiltradas.push({ ...palavra, inicio: Number(fimAlvo.toFixed(3)) });
       }
-      // senão: remove a palavra (sobra em ambos os lados era menor que o mínimo)
     }
 
-    // Reordena por início, já que a palavra movida pode ter mudado de posição
-    // relativa às outras.
     palavrasFiltradas.sort((a, b) => a.inicio - b.inicio);
 
-    return { ...bloco, palavras: palavrasFiltradas };
+    const novoInicioBloco = palavrasFiltradas[0]?.inicio ?? bloco.inicio;
+    return { ...bloco, palavras: palavrasFiltradas, inicio: novoInicioBloco };
   });
 
   return blocosAtualizados;
 }
 
+function ajustarLimitesEOverlaps(blocos) {
+  if (!blocos) return [];
+
+  // 1. Sincroniza o início e o fim de cada bloco com suas próprias palavras internas
+  let novosBlocos = blocos.map(bloco => {
+    if (!bloco.palavras || bloco.palavras.length === 0) return bloco;
+
+    const palavrasOrdenadas = [...bloco.palavras].sort((a, z) => a.inicio - z.inicio);
+    return {
+      ...bloco,
+      palavras: palavrasOrdenadas,
+      inicio: palavrasOrdenadas[0].inicio,
+      fim: palavrasOrdenadas[palavrasOrdenadas.length - 1].fim
+    };
+  });
+
+  // Garante a ordenação cronológica geral antes de calcular colisões
+  novosBlocos.sort((a, z) => a.inicio - z.inicio);
+
+  // 2. Corta de forma implacável colisões de tempo (overlap) sequenciais
+  for (let i = 1; i < novosBlocos.length; i++) {
+    const blocoAnterior = novosBlocos[i - 1];
+    const blocoAtual = novosBlocos[i];
+
+    if (blocoAtual.inicio < blocoAnterior.fim) {
+      const tetoFim = blocoAtual.inicio;
+
+      // Ajusta as palavras da frase anterior para respeitar o teto de tempo
+      const palavrasAjustadas = blocoAnterior.palavras
+        .map(p => {
+          if (p.fim > tetoFim) {
+            const novoFim = Math.max(p.inicio + 0.05, tetoFim);
+            return { ...p, fim: Number(novoFim.toFixed(3)) };
+          }
+          return p;
+        })
+        .filter(p => p.inicio < tetoFim); // Remove palavras que começarem após o teto
+
+      blocoAnterior.palavras = palavrasAjustadas;
+
+      if (palavrasAjustadas.length > 0) {
+        blocoAnterior.inicio = palavrasAjustadas[0].inicio;
+        blocoAnterior.fim = palavrasAjustadas[palavrasAjustadas.length - 1].fim;
+      } else {
+        blocoAnterior.inicio = tetoFim;
+        blocoAnterior.fim = tetoFim;
+      }
+    }
+  }
+
+  return novosBlocos;
+}
 
 export default function App() {
   const [projetoId, setProjetoId] = useState(null);
@@ -381,13 +357,6 @@ export default function App() {
   }, []);
 
   const [mostrarSincronizacao, setMostrarSincronizacao] = useState(false);
-  // CORREÇÃO: este estado (controle do painel de editor de SRT usado no
-  // JSX abaixo) estava faltando aqui — uma cópia anterior dele tinha
-  // ficado presa (incorretamente, como chamada de hook) dentro da função
-  // utilitária `aplicarResizeJuncao`, fora de qualquer componente. Isso
-  // causava "ReferenceError: mostrarEditorSrt is not defined" ao
-  // renderizar o App, porque o identificador nunca era criado no escopo
-  // certo.
   const [mostrarEditorSrt, setMostrarEditorSrt] = useState(false);
   const [alturaPainelFerramentas, setAlturaPainelFerramentas] = useState(300);
   const [estaArrastandoPainel, setEstaArrastandoPainel] = useState(false);
@@ -400,9 +369,20 @@ export default function App() {
 
   const aoCriarProjeto = useCallback((id, proj) => {
     setProjetoId(id);
+    if (proj && proj.blocos) {
+      proj.blocos = ajustarLimitesEOverlaps(proj.blocos);
+    }
     setProjeto(proj);
   }, []);
 
+  function aoAtualizarProjeto(novoProjeto) {
+    if (novoProjeto && novoProjeto.blocos) {
+      novoProjeto.blocos = ajustarLimitesEOverlaps(novoProjeto.blocos);
+    }
+    setProjeto(novoProjeto);
+  }
+
+  // RESTAURAÇÃO: useEffect original buscando metadados de vídeo.
   useEffect(() => {
     if (!projeto) return;
 
@@ -453,7 +433,6 @@ export default function App() {
     setModoEdicao(MODO_SELECAO);
     if (comCtrl) {
       setIdsSelecionados((prev) => {
-
         const base = prev.length === 0 && palavraSelecionadaId && palavraSelecionadaId !== id
           ? [palavraSelecionadaId]
           : prev;
@@ -476,6 +455,16 @@ export default function App() {
 
   async function atualizarEstiloPadrao(parcial) {
     const resp = await fetch(`/api/projetos/${projetoId}/estilo-padrao`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(parcial),
+    });
+    const data = await resp.json();
+    setProjeto(data.projeto);
+  }
+
+  async function atualizarGuiaMargens(parcial) {
+    const resp = await fetch(`/api/projetos/${projetoId}/guia-margens`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(parcial),
@@ -526,8 +515,6 @@ export default function App() {
     setProjeto(novoProjeto);
   }
 
-  // Permite editar o tempo de um bloco inteiro (com adaptação em cascata
-  // dos blocos vizinhos) a partir de outros pontos da UI, se necessário.
   const alterarTempoDoBloco = useCallback((blocoId, novoInicio, novoFim) => {
     setProjeto((projetoAtual) => {
       if (!projetoAtual) return projetoAtual;
@@ -536,7 +523,7 @@ export default function App() {
         novoInicio,
         novoFim,
       });
-      return { ...projetoAtual, blocos: novosBlocos };
+      return { ...projetoAtual, blocos: ajustarLimitesEOverlaps(novosBlocos) };
     });
   }, []);
 
@@ -550,7 +537,8 @@ export default function App() {
           novoTempo,
           duracaoMinima,
         });
-        return { ...projetoAtual, blocos: novosBlocos };
+        // Correção: usando novosBlocos e fechando o setProjeto corretamente
+        return { ...projetoAtual, blocos: ajustarLimitesEOverlaps(novosBlocos) };
       });
 
       if (debounceResizeRef.current) clearTimeout(debounceResizeRef.current);
@@ -571,10 +559,6 @@ export default function App() {
     [projetoId]
   );
 
-  // Redimensiona a JUNÇÃO entre duas palavras coladas (arrasta o ponto de
-  // contato, movendo o fim de uma e o início da outra ao mesmo tempo). Só
-  // é chamado pela TelaTimeline quando o cursor está sobre a lacuna entre
-  // dois blocos adjacentes (gap ~0), nunca dentro de um retângulo.
   const aoRedimensionarJuncao = useCallback(
     ({ palavraEsquerdaId, palavraDireitaId, novoTempo, duracaoMinima }) => {
       setProjeto((projetoAtual) => {
@@ -585,7 +569,8 @@ export default function App() {
           novoTempo,
           duracaoMinima,
         });
-        return { ...projetoAtual, blocos: novosBlocos };
+        // Correção: usando novosBlocos e removendo o fechamento duplo precoce
+        return { ...projetoAtual, blocos: ajustarLimitesEOverlaps(novosBlocos) };
       });
 
       if (debounceResizeRef.current) clearTimeout(debounceResizeRef.current);
@@ -606,12 +591,6 @@ export default function App() {
     [projetoId]
   );
 
-  // Move uma palavra inteira (arrastando pelo centro do bloco) para uma
-  // nova posição no tempo, preservando sua duração. Ao contrário do
-  // redimensionamento por alça (ripple, mantém contato com vizinhas), aqui
-  // a palavra pode ser solta em qualquer posição livre da timeline; se ela
-  // for solta sobre outra(s) palavra(s), a área sobreposta é recortada das
-  // palavras atingidas (ou elas são removidas, se totalmente cobertas).
   const aoMoverPalavra = useCallback(
     ({ palavraId, novoInicio, novoFim, duracaoMinima }) => {
       setProjeto((projetoAtual) => {
@@ -622,14 +601,134 @@ export default function App() {
           novoFim,
           duracaoMinima,
         });
-        return { ...projetoAtual, blocos: novosBlocos };
+        // Correção: usando novosBlocos
+        return { ...projetoAtual, blocos: ajustarLimitesEOverlaps(novosBlocos) };
       });
     },
     []
   );
 
-  // Persiste no servidor o estado final apos soltar o bloco (evita PATCH a
-  // cada pixel de arraste; so grava quando o usuario solta o mouse).
+  const aoMoverPalavraEntreBlocos = useCallback((palavraId, blocoDestinoId, indexDestino) => {
+    setProjeto((projetoAtual) => {
+      if (!projetoAtual) return projetoAtual;
+
+      let palavraMovida = null;
+      let blocoOrigemId = null;
+      let indexOrigem = -1;
+
+      // 1. Descobre de onde a palavra está vindo antes de retirá-la
+      projetoAtual.blocos.forEach(b => {
+        const idx = b.palavras.findIndex(p => p.id === palavraId);
+        if (idx !== -1) {
+          palavraMovida = { ...b.palavras[idx] };
+          blocoOrigemId = b.id;
+          indexOrigem = idx;
+        }
+      });
+
+      if (!palavraMovida) return projetoAtual;
+
+      // 2. Corrige o alvo: se a palavra saiu de trás e foi para frente no mesmo bloco,
+      // o array encolheu 1 posição, então diminuímos 1 do destino para compensar.
+      let indexCorrigido = indexDestino;
+      if (blocoOrigemId === blocoDestinoId && indexOrigem < indexDestino) {
+        indexCorrigido -= 1;
+      }
+
+      // 3. Remove a palavra da lista original
+      const blocosSemPalavra = projetoAtual.blocos.map((b) => ({
+        ...b,
+        palavras: b.palavras.filter((p) => p.id !== palavraId),
+      }));
+
+      // 4. Insere no lugar certo cravando o Tempo (em segundos)
+      const blocosFinal = blocosSemPalavra.map((b) => {
+        if (b.id !== blocoDestinoId) return b;
+
+        let novasPalavras = [...b.palavras];
+        let tempoNovo = b.inicio;
+
+        if (novasPalavras.length === 0) {
+          // Bloco vazio
+          tempoNovo = b.inicio;
+        } else if (indexCorrigido <= 0) {
+          // Colocando bem no começo
+          tempoNovo = Math.max(b.inicio, novasPalavras[0].inicio - 0.02);
+        } else if (indexCorrigido >= novasPalavras.length) {
+          // Colocando lá no final
+          tempoNovo = novasPalavras[novasPalavras.length - 1].fim + 0.02;
+        } else {
+          // Soltou NO MEIO: calcula o tempo exato (ponto-médio) entre as duas palavras vizinhas
+          const pAnterior = novasPalavras[indexCorrigido - 1];
+          const pProxima = novasPalavras[indexCorrigido];
+
+          if (pProxima.inicio > pAnterior.inicio) {
+            tempoNovo = pAnterior.inicio + ((pProxima.inicio - pAnterior.inicio) / 2);
+          } else {
+            // Caso excepcional onde duas palavras tenham tempos exatos encavalados
+            tempoNovo = pAnterior.inicio + 0.001;
+          }
+        }
+
+        // Atualiza a palavra para assumir o milissegundo do espaço exato e trava na posição
+        palavraMovida.inicio = Number(tempoNovo.toFixed(3));
+        palavraMovida.fim = Number((tempoNovo + 0.01).toFixed(3));
+
+        novasPalavras.splice(indexCorrigido, 0, palavraMovida);
+
+        // Agora a ordenação cronológica não vai mais estragar o lugar
+        return { ...b, palavras: novasPalavras.sort((a, z) => a.inicio - z.inicio) };
+      });
+
+      // 5. Salva na API back-end
+      fetch(`/api/projetos/${projetoId}/blocos`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blocos: blocosFinal }),
+      }).catch((err) => console.error('Falha ao salvar blocos:', err));
+
+      return { ...projetoAtual, blocos: blocosFinal };
+    });
+  }, [projetoId]);
+
+const aoAlterarTempoBloco = useCallback((blocoId, novoInicio, novoFim) => {
+    setProjeto((projetoAtual) => {
+      if (!projetoAtual) return projetoAtual;
+
+      const blocosAtualizados = projetoAtual.blocos.map((b) => {
+        if (b.id === blocoId) {
+          const diferencaInicio = novoInicio - b.inicio;
+
+          const palavrasAjustadas = b.palavras.map((p) => ({
+            ...p,
+            inicio: Number((p.inicio + diferencaInicio).toFixed(3)),
+            fim: Number((p.fim + diferencaInicio).toFixed(3))
+          }));
+
+          return { 
+            ...b, 
+            inicio: Number(novoInicio), 
+            fim: Number(novoFim),
+            palavras: palavrasAjustadas
+          };
+        }
+        return b;
+      });
+
+      blocosAtualizados.sort((a, z) => a.inicio - z.inicio);
+      const blocosAjustados = ajustarLimitesEOverlaps(blocosAtualizados);
+
+      // Envia a modificação perfeitamente limpa e sem colisão para o Back-end
+      fetch(`/api/projetos/${projetoId}/blocos`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blocos: blocosAjustados }),
+      }).catch((err) => console.error('Falha ao salvar tempos do bloco:', err));
+
+      return { ...projetoAtual, blocos: blocosAjustados };
+    });
+  }, [projetoId]);
+
   const aoFinalizarMoverPalavra = useCallback(() => {
     if (!projetoId) return;
     setProjeto((projetoAtual) => {
@@ -645,26 +744,6 @@ export default function App() {
     });
   }, [projetoId]);
 
-  // CORREÇÃO (agulha não acompanhava o play): este efeito é o único
-  // lugar que escuta os eventos reais do Remotion Player
-  // (frameupdate/play/pause/ended). `estaTocando` e `tempoAtualSegundos`
-  // vindos daqui são passados tanto para a tela de Editor quanto para a
-  // tela de Timeline — nenhuma das duas mais mantém seu próprio estado
-  // de "está tocando" ou seu próprio clock.
-  //
-  // BUG CORRIGIDO: antes este efeito dependia só de `[projeto]`. Como o
-  // <Player> do Remotion é montado via createPortal dentro de um slot
-  // (`slotEditor`/`slotTimeline`) que só existe DEPOIS do primeiro
-  // render, `playerRef.current` ainda era `null` no momento em que este
-  // efeito rodava — o efeito então caía no early return e o listener de
-  // `frameupdate` NUNCA era registrado. Resultado: o vídeo tocava
-  // normalmente (o Player tem seus próprios controles internos), mas
-  // `tempoAtualSegundos` no App nunca era atualizado, então a agulha
-  // (e o wavesurfer) ficavam parados. Agora o efeito depende também de
-  // `slotEditor`/`slotTimeline`, que só passam a existir depois que o
-  // portal monta — e ainda assim faz um pequeno polling via
-  // requestAnimationFrame como rede de segurança, caso o ref do Player
-  // demore um tick extra para ser preenchido.
   useEffect(() => {
     let cancelado = false;
     let tentativaId = null;
@@ -696,8 +775,6 @@ export default function App() {
       if (player) {
         limpar = registrar(player);
       } else {
-        // Ref ainda não disponível neste tick (portal ainda montando) —
-        // tenta de novo no próximo frame até conseguir ou desmontar.
         tentativaId = requestAnimationFrame(tentarRegistrar);
       }
     }
@@ -709,7 +786,7 @@ export default function App() {
       if (tentativaId) cancelAnimationFrame(tentativaId);
       if (limpar) limpar();
     };
-  }, [projeto, slotEditor]);
+  }, [slotEditor]);
 
   const aoBuscarTempo = useCallback((segundos) => {
     const player = playerRef.current;
@@ -719,12 +796,6 @@ export default function App() {
     setTempoAtualSegundos(segundos);
   }, []);
 
-  // CORREÇÃO (sincronia vídeo/áudio): esta função age diretamente sobre
-  // o Remotion Player (única fonte de verdade de play/pause). Antes, o
-  // botão de play da tela de Timeline não usava esta função — chamava
-  // apenas `setTocandoLocal`, que só dava play/pause no WaveSurfer.
-  // Agora `TelaTimeline` recebe `aoAlternarPlayPause` como prop e o
-  // botão de play de lá comanda o mesmo player que o Editor usa.
   const aoAlternarPlayPause = useCallback(() => {
     const player = playerRef.current;
     if (!player) return;
@@ -739,43 +810,32 @@ export default function App() {
     setSlotEditor((atual) => (atual === no ? atual : no));
   }, []);
 
-  if (!projeto) {
-    return <TelaImportacao aoCriarProjeto={aoCriarProjeto} />;
-  }
-
+  // =========================================================================
+  // FIX: Hooks moved safely BEFORE the `if (!projeto)` early return.
+  // Optional chaining (?.) is used to prevent errors when projeto is null.
+  // =========================================================================
+  const urlVideo = resolverUrlVideo(projeto?.caminhoVideo);
+  const duracaoFrames = calcularDuracaoFrames(projeto?.blocos);
   const larguraProjeto = dimensoesVideo.largura;
   const alturaProjeto = dimensoesVideo.altura;
 
-  const videoDeveFicarNaDireita = larguraProjeto > 1080;
-
-  const palavraSelecionada = palavraSelecionadaId
-    ? encontrarPalavra(projeto.blocos, palavraSelecionadaId)
-    : null;
-
-  const estiloEmEdicao = palavraSelecionada
-    ? { ...projeto.estiloPadrao, ...(palavraSelecionada.estilo || {}) }
-    : projeto.estiloPadrao;
-
-  const duracaoFrames = calcularDuracaoFrames(projeto.blocos);
-  const duracaoSegundos = duracaoFrames / FPS;
-  const urlVideo = resolverUrlVideo(projeto.caminhoVideo);
-
-  const haSelecao = !!palavraSelecionada || idsSelecionados.length > 0;
-
-  const textoAtualDasLegendas = (projeto.blocos || [])
-    .map((bloco) => (bloco?.palavras || []).map((p) => p?.texto || '').join(' '))
-    .join(' ');
-
-  const playerInputProps = React.useMemo(() => ({
+  const playerInputProps = useMemo(() => ({
     projeto,
     corFundo: urlVideo ? 'transparent' : '#1a1a1a',
     videoPreviewSrc: urlVideo,
+    guiaMargens: projeto?.guiaMargens,
+    // modoPreview=true SÓ é passado aqui, pelo <Player> do editor. O
+    // pipeline de renderização final (@remotion/renderer, server/index.js)
+    // nunca passa essa prop — é o que garante que a guia de margens
+    // seguras (ver CaptionComposition.jsx) nunca apareça no vídeo
+    // exportado, mesmo que esteja ativada no projeto.
+    modoPreview: true,
   }), [projeto, urlVideo]);
 
-  const slotAtivo = telaAtual === TELA_EDITOR ? slotEditor : null;
+  const playerElement = useMemo(() => {
+    if (!projeto) return null; // Early return for useMemo if project is missing
 
-  const playerPortado = slotAtivo
-    ? createPortal(
+    return (
       <PreviewErrorBoundary>
         <Player
           ref={playerRef}
@@ -786,16 +846,43 @@ export default function App() {
           compositionHeight={alturaProjeto}
           style={{ width: '100%', height: '100%' }}
           controls={telaAtual === TELA_EDITOR}
-          inputProps={{
-            projeto,
-            corFundo: urlVideo ? 'transparent' : '#1a1a1a',
-            videoPreviewSrc: urlVideo,
-          }}
+          inputProps={playerInputProps}
         />
-      </PreviewErrorBoundary>,
-      slotAtivo
-    )
+      </PreviewErrorBoundary>
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projeto, duracaoFrames, larguraProjeto, alturaProjeto, telaAtual, playerInputProps]);
+
+  // =========================================================================
+  // EARLY RETURN 
+  // Ocorre de forma segura APÓS a declaração de todos os hooks do componente.
+  // =========================================================================
+  if (!projeto) {
+    return <TelaImportacao aoCriarProjeto={aoCriarProjeto} />;
+  }
+
+  // =========================================================================
+  // VARIÁVEIS NORMAIS
+  // =========================================================================
+  const videoDeveFicarNaDireita = larguraProjeto > 1080;
+  const duracaoSegundos = duracaoFrames / FPS;
+
+  const palavraSelecionada = palavraSelecionadaId
+    ? encontrarPalavra(projeto.blocos, palavraSelecionadaId)
     : null;
+
+  const estiloEmEdicao = palavraSelecionada
+    ? { ...projeto.estiloPadrao, ...(palavraSelecionada.estilo || {}) }
+    : projeto.estiloPadrao;
+
+  const haSelecao = !!palavraSelecionada || idsSelecionados.length > 0;
+
+  const textoAtualDasLegendas = (projeto.blocos || [])
+    .map((bloco) => (bloco?.palavras || []).map((p) => p?.texto || '').join(' '))
+    .join(' ');
+
+  const slotAtivo = telaAtual === TELA_EDITOR ? slotEditor : null;
+  const playerPortado = slotAtivo ? createPortal(playerElement, slotAtivo) : null;
 
   return (
     <>
@@ -804,6 +891,7 @@ export default function App() {
       <div style={{ display: telaAtual === TELA_TIMELINE ? 'block' : 'none', height: '100vh', width: '100vw' }}>
         <TelaTimeline
           projeto={projeto}
+          projetoId={projetoId}
           urlAudio={urlVideo}
           duracaoSegundos={duracaoSegundos}
           palavraSelecionadaId={palavraSelecionadaId}
@@ -814,6 +902,7 @@ export default function App() {
           aoRedimensionarJuncao={aoRedimensionarJuncao}
           aoMoverPalavra={aoMoverPalavra}
           aoFinalizarMoverPalavra={aoFinalizarMoverPalavra}
+          aoAlterarTempoBloco={aoAlterarTempoBloco}
         />
       </div>
 
@@ -823,24 +912,22 @@ export default function App() {
           display: telaAtual === TELA_EDITOR ? 'flex' : 'none',
           gap: '24px',
           flexDirection: 'row',
-          height: '100vh',     /* Ocupa exatamente a janela toda */
-          width: '100vw',      /* Garante a largura também */
-          padding: '24px',     /* Espaço interno seguro */
-          boxSizing: 'border-box', /* O SEGREDO: o padding não aumenta o tamanho total de 100vh! */
+          height: '100vh',
+          width: '100vw',
+          padding: '24px',
+          boxSizing: 'border-box',
           overflow: 'hidden'
         }}
       >
-        {/* COLUNA ESQUERDA: Sessão Principal de Trabalho */}
         <div style={{
           flex: 1,
           minWidth: 0,
           display: 'flex',
           flexDirection: 'column',
           gap: '20px',
-          minHeight: 0 /* Em vez de height: 100%, isto impede overflow */
+          minHeight: 0
         }}>
 
-          {/* CABEÇALHO */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
             <h2 className="app-title" style={{ margin: 0 }}>{projeto.nome}</h2>
             <div style={{ display: 'flex', gap: '10px' }}>
@@ -867,8 +954,6 @@ export default function App() {
             </div>
           </div>
 
-
-
           {mostrarEditorSrt && (
             <PainelEditorSrt
               projeto={projeto}
@@ -883,17 +968,15 @@ export default function App() {
             </p>
           )}
 
-          {/* ÁREA DE CONTEÚDO PRINCIPAL (Video + Lista) */}
           <div style={{
             display: 'flex',
             flexDirection: videoDeveFicarNaDireita ? 'row-reverse' : 'row',
             gap: '24px',
             flex: 1,
-            minHeight: 0, /* ESSENCIAL PARA FLEXBOX NÃO TRANSBORDAR */
+            minHeight: 0,
             alignItems: 'stretch'
           }}>
 
-            {/* VÍDEO PREVIEW */}
             <div style={{
               width: videoDeveFicarNaDireita ? '50%' : '320px',
               flexShrink: 0,
@@ -914,13 +997,12 @@ export default function App() {
               />
             </div>
 
-            {/* LISTA DE PALAVRAS E OPÇÕES (COLUNA FLEXÍVEL) */}
             <div style={{
               flex: 1,
               display: 'flex',
               flexDirection: 'column',
               minWidth: 0,
-              minHeight: 0 /* Substitui height: 100% para evitar "leaking" */
+              minHeight: 0
             }}>
               <h3 className="panel-title" style={{ marginBottom: 10, fontSize: 13, flexShrink: 0 }}>
                 Palavras <span style={{ textTransform: 'none', color: 'var(--text-tertiary)', fontWeight: 400, letterSpacing: 0 }}>
@@ -928,7 +1010,6 @@ export default function App() {
                 </span>
               </h3>
 
-              {/* CONTENTOR DA LISTA DE PALAVRAS */}
               <div style={{
                 flex: 1,
                 minHeight: 0,
@@ -936,8 +1017,8 @@ export default function App() {
                 border: '1px solid var(--hairline)',
                 borderRadius: '8px',
                 background: 'var(--bg-panel)',
-                padding: '12px', /* Previne que as palavras colem nos limites do container */
-                paddingBottom: '24px' /* Espaço extra no fundo do scroll */
+                padding: '12px',
+                paddingBottom: '24px'
               }}>
                 <ListaPalavras
                   blocos={projeto.blocos}
@@ -945,13 +1026,13 @@ export default function App() {
                   idsSelecionados={idsSelecionados}
                   aoSelecionarPalavra={aoSelecionarPalavra}
                   aoLimparSelecao={aoLimparSelecao}
+                  aoMoverPalavraEntreBlocos={aoMoverPalavraEntreBlocos}
                 />
               </div>
             </div>
 
           </div>
 
-          {/* PAINEL INFERIOR TIPO VS CODE */}
           {mostrarSincronizacao && (
             <div
               style={{
@@ -997,14 +1078,13 @@ export default function App() {
 
         </div>
 
-        {/* COLUNA DIREITA (RAIL) */}
         <div style={{
           width: '340px',
           flexShrink: 0,
           display: 'flex',
           flexDirection: 'column',
           gap: '20px',
-          minHeight: 0, /* Substitui height: 100% */
+          minHeight: 0,
           overflowY: 'auto',
           paddingRight: '10px'
         }}>
@@ -1029,6 +1109,13 @@ export default function App() {
               estilo={projeto.estiloPadrao}
               titulo="Estilo padrão do projeto"
               aoMudar={atualizarEstiloPadrao}
+            />
+          )}
+
+          {modoEdicao === MODO_GLOBAL && (
+            <PainelMargens
+              guiaMargens={projeto.guiaMargens}
+              aoMudar={atualizarGuiaMargens}
             />
           )}
 

@@ -45,7 +45,7 @@ const FONTE_FALLBACK = {
   estilos: [{ peso: 400, italico: false, nomeEstilo: 'Regular', arquivo: null }],
 };
 
-export function PainelPropriedades({ estilo = {}, aoMudar, titulo, aoLimparOverride }) {
+export function PainelPropriedades({ estilo = {}, aoMudar, titulo, aoLimparOverride, alturaVideo = 1920 }) {
   const [familiasDisponiveis, setFamiliasDisponiveis] = useState([]);
   const [carregandoFontes, setCarregandoFontes] = useState(true);
   const [erroFontes, setErroFontes] = useState(null);
@@ -99,6 +99,8 @@ export function PainelPropriedades({ estilo = {}, aoMudar, titulo, aoLimparOverr
   }
 
   const modoRevelacaoAtual = estilo.modoRevelacao || 'silaba';
+  const tamanhoBaseAtual = estilo.tamanhoBase ?? 42;
+  const tamanhoPorcentagemAtual = (tamanhoBaseAtual / alturaVideo) * 100;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -179,11 +181,39 @@ export function PainelPropriedades({ estilo = {}, aoMudar, titulo, aoLimparOverr
         </label>
       </div>
 
-      <div className="field">
-        <label className="field-label">
-          Tamanho base <span className="field-label__value">{estilo.tamanhoBase}px</span>
-        </label>
-        <input type="range" min="16" max="120" step="1" value={estilo.tamanhoBase} onChange={(e) => atualizar('tamanhoBase', Number(e.target.value))} />
+        <div className="panel" style={{ gap: 14 }}>
+        <div className="field">
+          <label className="field-label">
+            Tamanho base (Pixels) <span className="field-label__value">{tamanhoBaseAtual}px</span>
+          </label>
+          <input 
+            type="range" 
+            min="16" 
+            max="300" 
+            step="1" 
+            value={tamanhoBaseAtual} 
+            onChange={(e) => atualizar('tamanhoBase', Number(e.target.value))} 
+          />
+        </div>
+
+        <div className="field">
+          <label className="field-label">
+            Tamanho base (%) <span className="field-label__value">{tamanhoPorcentagemAtual.toFixed(2)}% da altura</span>
+          </label>
+          <input 
+            type="range" 
+            min="0.5" 
+            max="20" 
+            step="0.1" 
+            value={tamanhoPorcentagemAtual} 
+            onChange={(e) => {
+              const novaPorcentagem = Number(e.target.value);
+              // Calcula o novo tamanho em pixels proporcional à porcentagem da altura do vídeo
+              const novoTamanhoPx = Math.round((novaPorcentagem / 100) * alturaVideo);
+              atualizar('tamanhoBase', novoTamanhoPx);
+            }} 
+          />
+        </div>
       </div>
 
       <div className="panel" style={{ gap: 14 }}>

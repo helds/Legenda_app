@@ -1,28 +1,20 @@
 // client/src/components/TelaTimeline.jsx
-import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useWavesurfer } from '../hooks/useWavesurfer';
+import { useWaveformPeaks } from '../hooks/useWaveformPeaks';
 import { LegendaFlutuante } from './LegendaFlutuante';
-// projectModel.js é CommonJS (module.exports), então o Vite expõe tudo
-// agrupado como default export — não dá para desestruturar direto no
-// import (`import { corDaPalavraPorVolume } from ...` falha em runtime
-// com "does not provide an export named"). Importamos o objeto inteiro
-// e pegamos a função dele.
 import * as projectModel from '../../../shared/projectModel';
 
 const PX_POR_SEGUNDO_BASE = 72;
 const ZOOM_MIN = 0.25;
-const ZOOM_MAX = 8;
-const ALTURA_ONDA = 96;
+const ZOOM_MAX = 16;
 const ALTURA_REGUA = 34;
-const ALTURA_TRILHA_LEGENDA = 58;
 const ALTURA_LEGENDA_FLUTUANTE = 200;
 const LARGURA_ROTULO = 76;
 
 const DURACAO_MINIMA_PALAVRA = 0.08;
 const LARGURA_ALCA_PX = 8;
 const LARGURA_ALCA_JUNCAO_PX = 10;
-// Mesmo limiar usado no App.jsx para decidir se duas palavras vizinhas
-// estão "coladas" (habilitando a alça de junção estilo DaVinci Resolve).
 const LIMIAR_JUNCAO_SEGUNDOS = 0.02;
 
 const COR_FUNDO = '#101114';
@@ -34,11 +26,6 @@ const COR_TEXTO_TERC = '#6b6d76';
 const COR_AMBAR = '#ef9f27';
 const COR_AZUL = '#5b8def';
 const COR_WAVE = '#3d9b8a';
-
-// Cor sólida usada quando a palavra NÃO tem dado de volume (projeto
-// criado só a partir de .srt, sem sincronização de áudio) — mesma cor
-// que já existia antes desta funcionalidade, para não mudar a aparência
-// de projetos que nunca rodaram a análise de volume.
 const COR_BLOCO_SEM_VOLUME = '#c9bfa1';
 
 function limitarNumero(valor, fallback = 0) {
@@ -78,20 +65,6 @@ function coletarPalavras(blocos) {
   );
 }
 
-// Decide a cor de fundo e a cor de texto do retângulo de uma palavra na
-// trilha de legenda da timeline, considerando (em ordem de prioridade):
-//   1. Volume (se o projeto tiver `volumeReferencia` e a palavra tiver
-//      `volumeDb`) — gradiente contínuo azul (abaixo da média) -> verde
-//      (na média) -> vermelho (acima da média). Isso é o sinal mais
-//      importante para o usuário identificar variações de volume.
-//   2. Fallback: a cor sólida antiga (bege quando sem override de
-//      estilo, âmbar-transparente quando com override), usada sempre
-//      que não há dado de volume disponível para aquela palavra.
-//
-// O texto muda para branco sobre fundos coloridos por volume (todos os
-// 3 pontos do gradiente — azul, verde, vermelho — são escuros o
-// suficiente para contraste com texto claro), e mantém o esquema antigo
-// (claro/escuro conforme override) quando cai no fallback.
 function resolverCoresDoBlocoDePalavra(palavra, volumeReferencia) {
   const corVolume = projectModel.corDaPalavraPorVolume(palavra, volumeReferencia);
   if (corVolume) {
@@ -103,20 +76,13 @@ function resolverCoresDoBlocoDePalavra(palavra, volumeReferencia) {
   };
 }
 
-// CORREÇÃO (Timeline sem vídeo/Player): a TelaTimeline não depende mais
-// do Remotion Player nem do App.jsx para tempo/play. O WaveSurfer,
-// instanciado logo abaixo com `mutado: false`, é agora a ÚNICA fonte de
-// verdade de tempo/play/áudio nesta tela — ele toca o áudio de verdade
-// (antes ficava mudo, pois o áudio vinha do <Video> dentro do Player).
-// `aoAlternarPlayPause` e `aoBuscarTempo` são funções locais definidas
-// mais abaixo que chamam os métodos do WaveSurfer. Os atalhos de
-// teclado continuam funcionando exatamente igual para o usuário.
 function useAtalhosDeTeclado({
   aoAlternarPlayPause,
   aoBuscarTempo,
   tempoAtualSegundosRef,
   duracaoRef,
-  setZoom,
+  aplicarZoom,
+  centralizarAgulha,
   fps = 30,
 }) {
   useEffect(() => {
@@ -155,17 +121,22 @@ function useAtalhosDeTeclado({
           evento.preventDefault();
           aoBuscarTempo?.(0);
           break;
+        case 'c':
+        case 'C':
+          evento.preventDefault();
+          centralizarAgulha?.();
+          break;
         case 'End':
           evento.preventDefault();
           aoBuscarTempo?.(duracao);
           break;
         case '+':
         case '=':
-          setZoom((z) => Math.min(ZOOM_MAX, Number((z * 1.25).toFixed(3))));
+          aplicarZoom((z) => Number((z * 1.25).toFixed(3)));
           break;
         case '-':
         case '_':
-          setZoom((z) => Math.max(ZOOM_MIN, Number((z / 1.25).toFixed(3))));
+          aplicarZoom((z) => Number((z / 1.25).toFixed(3)));
           break;
         default:
           break;
@@ -174,11 +145,12 @@ function useAtalhosDeTeclado({
 
     window.addEventListener('keydown', aoTeclar);
     return () => window.removeEventListener('keydown', aoTeclar);
-  }, [aoAlternarPlayPause, aoBuscarTempo, tempoAtualSegundosRef, duracaoRef, setZoom, fps]);
+  }, [aoAlternarPlayPause, aoBuscarTempo, tempoAtualSegundosRef, duracaoRef, aplicarZoom, centralizarAgulha, fps]);
 }
 
 export function TelaTimeline({
   projeto,
+  projetoId,
   urlAudio,
   duracaoSegundos,
   palavraSelecionadaId,
@@ -192,45 +164,67 @@ export function TelaTimeline({
 }) {
   const [zoom, setZoom] = useState(1);
   const [seguirPlayhead, setSeguirPlayhead] = useState(true);
+  const [zoomNoCursor, setZoomNoCursor] = useState(true);
+  const [agulhaCentralizada, setAgulhaCentralizada] = useState(false);
+  
+  const [alturaOnda, setAlturaOnda] = useState(96);
+  const [alturaTrilhaLegenda, setAlturaTrilhaLegenda] = useState(58);
 
-  // CORREÇÃO (Timeline sem vídeo/Player): tempo e play/pause nascem
-  // AQUI, a partir do WaveSurfer — não vêm mais do App/Remotion Player.
-  // Isso é intencional: nesta tela o WaveSurfer é a única fonte de
-  // áudio (ver `mutado: false` logo abaixo).
   const [tempoAtualSegundos, setTempoAtualSegundos] = useState(0);
   const [estaTocando, setEstaTocando] = useState(false);
 
   const containerScrollRef = useRef(null);
   const faixaRef = useRef(null);
+  const scrollPosDesejadaRef = useRef(null);
+  
+  const waveTrackRef = useRef(null);
+  const waveHeaderRef = useRef(null);
+  const legendaTrackRef = useRef(null);
+  const legendaHeaderRef = useRef(null);
 
   const arrastandoAgulhaRef = useRef(false);
   const pointerIdAgulhaRef = useRef(null);
   const resizeAtivoRef = useRef(null);
   const resizeJuncaoAtivoRef = useRef(null);
   const moverAtivoRef = useRef(null);
-  // Estado visual (nao vem do projeto) so para a palavra sendo arrastada,
-  // atualizado a cada pointermove; o valor definitivo eh sempre recalculado
-  // a partir do que ja esta no estado do componente pai - este estado so
-  // existe para o preview fluido de arraste sem esperar o round-trip do
-  // estado do React.
-  const [arrastoVisual, setArrastoVisual] = useState(null); // { palavraId, inicio, fim }
+  const [arrastoVisual, setArrastoVisual] = useState(null);
 
-  // Controla os scrolls feitos automaticamente pelo código (autoscroll ao
-  // seguir o playhead), para não confundir com scroll manual do usuário.
   const ignorarScroll = useRef(false);
   const timeoutScroll = useRef(null);
 
+  // Posição de scroll e largura do container, usadas só para calcular
+  // quais palavras estão na janela de tempo visível (ver
+  // `palavrasVisiveis` abaixo). Sem isso, a track de LEGENDA renderizava
+  // TODAS as palavras do projeto inteiro o tempo todo — em projetos
+  // longos (dezenas de minutos de fala contínua = milhares de palavras),
+  // isso significava milhares de <div> sendo recalculados a cada
+  // `timeupdate` do áudio (que dispara várias vezes por segundo durante
+  // o play), causando a agulha "travando"/laggando.
+  const [scrollLeftAtual, setScrollLeftAtual] = useState(0);
+  const [larguraViewportAtual, setLarguraViewportAtual] = useState(0);
+
   const pxPorSegundo = PX_POR_SEGUNDO_BASE * zoom;
-
-  // Ref estável para `aoBuscarTempo`, usado dentro do callback `onSeek`
-  // passado ao useWavesurfer logo abaixo. Como `aoBuscarTempo` só é
-  // definida via useCallback depois (pois depende de
-  // `atualizarProgressoWavesurfer`, retornado pelo próprio hook), usamos
-  // um ref para quebrar essa dependência circular sem arriscar closures
-  // desatualizadas.
   const aoBuscarTempoRef = useRef(null);
-
   const wavesurferContainerRef = useRef(null);
+
+  // Picos pré-computados no servidor (ver server/waveformService.js) —
+  // chegam prontos em paralelo ao WaveSurfer carregar o áudio para
+  // reprodução, e evitam que ele precise decodificar o arquivo inteiro
+  // no navegador só para desenhar a onda (ver useWavesurfer.js).
+  const { picos: picosServidor, duracaoSegundos: duracaoServidor } = useWaveformPeaks(projetoId);
+
+  // O WaveSurfer aqui é a fonte real de reprodução (mutado: false), e
+  // por isso precisa carregar e decodificar essa URL inteira — usar o
+  // vídeo original (urlAudio) quebra em arquivos grandes selecionados
+  // localmente ("file could not be read... after a reference was
+  // acquired", erro do Electron ao sustentar leitura longa de arquivos
+  // grandes). Em vez disso, usamos a trilha de áudio já extraída (mp3,
+  // bem menor) e cacheada pelo servidor — ver server/waveformService.js
+  // (obterAudioExtraidoComCache) e a rota /api/audio-extraido/:idProjeto.
+  // Cai de volta para urlAudio só se ainda não temos projetoId (ex:
+  // instante inicial de carregamento da tela).
+  const urlAudioReproducao = projetoId ? `/api/audio-extraido/${projetoId}` : urlAudio;
+
   const {
     pronto: temWaveformReal,
     carregando,
@@ -240,18 +234,18 @@ export function TelaTimeline({
     alternarPlayPause: alternarPlayPauseWavesurfer,
   } = useWavesurfer({
     containerRef: wavesurferContainerRef,
-    url: urlAudio,
+    url: urlAudioReproducao,
     pxPorSegundo: pxPorSegundo,
     corOnda: COR_WAVE,
     corProgresso: COR_AMBAR,
-    altura: ALTURA_ONDA,
+    altura: alturaOnda,
     onSeek: (segundos) => aoBuscarTempoRef.current?.(segundos),
-    // A Timeline não mostra mais vídeo — o áudio real sai daqui, então
-    // o WaveSurfer deixa de ficar mudo.
     mutado: false,
     onPlay: () => setEstaTocando(true),
     onPause: () => setEstaTocando(false),
     onTempoAtualizado: (segundos) => setTempoAtualSegundos(segundos),
+    picosPreCalculados: picosServidor,
+    duracaoSegundosPreCalculada: duracaoServidor,
   });
 
   const aoBuscarTempo = useCallback(
@@ -271,19 +265,35 @@ export function TelaTimeline({
   const larguraTotal = Math.max(800, Math.ceil(duracao * pxPorSegundo));
 
   const palavras = useMemo(() => coletarPalavras(projeto?.blocos), [projeto]);
-
-  // Referência global de volume do projeto (min/média ponderada/max),
-  // preenchida pela sincronização automática de áudio (ver
-  // server/audioSyncService.js e shared/projectModel.js#criarProjeto).
-  // Pode ser null/undefined em projetos sem análise de áudio — nesse
-  // caso resolverCoresDoBlocoDePalavra cai de volta na cor sólida antiga.
   const volumeReferencia = projeto?.volumeReferencia || null;
 
-  // Para cada palavra, identifica se há uma vizinha colada imediatamente à
-  // direita (gap <= LIMIAR_JUNCAO_SEGUNDOS). Quando há, a fronteira entre
-  // as duas ganha uma alça de JUNÇÃO (redimensiona as duas ao mesmo tempo,
-  // estilo DaVinci Resolve); quando não há, a borda direita da própria
-  // palavra funciona como resize individual e livre.
+  // Janela de tempo (em pixels) atualmente visível na track, com uma
+  // margem de segurança pra cada lado — evita que blocos "pisquem" ao
+  // entrar/sair da tela durante scroll rápido ou zoom. Usada só para
+  // VIRTUALIZAR a renderização da track de LEGENDA (ver
+  // `palavrasVisiveis` logo abaixo): em vez de desenhar todas as
+  // palavras do projeto inteiro sempre, desenhamos só as que estão
+  // (perto de estar) na tela. `juncoesPorPalavraId`/
+  // `idsComJuncaoNaEsquerda` abaixo continuam usando `palavras`
+  // (lista completa), não `palavrasVisiveis` — a lógica de junção entre
+  // palavras vizinhas precisa considerar o projeto inteiro pra ficar
+  // correta perto das bordas da janela visível.
+  const MARGEM_VIRTUALIZACAO_PX = 800;
+  const inicioJanelaVisivelPx = Math.max(0, scrollLeftAtual - MARGEM_VIRTUALIZACAO_PX);
+  const fimJanelaVisivelPx = scrollLeftAtual + larguraViewportAtual + MARGEM_VIRTUALIZACAO_PX;
+
+  const palavrasVisiveis = useMemo(() => {
+    // Antes da primeira medição do container (larguraViewportAtual
+    // ainda 0), não sabemos a janela visível — mostra tudo só nesse
+    // instante inicial raríssimo, em vez de esconder a legenda inteira.
+    if (!larguraViewportAtual) return palavras;
+    return palavras.filter((palavra) => {
+      const inicioPx = Math.max(0, limitarNumero(palavra.inicio)) * pxPorSegundo;
+      const fimPx = Math.max(inicioPx, limitarNumero(palavra.fim, palavra.inicio)) * pxPorSegundo;
+      return fimPx >= inicioJanelaVisivelPx && inicioPx <= fimJanelaVisivelPx;
+    });
+  }, [palavras, pxPorSegundo, inicioJanelaVisivelPx, fimJanelaVisivelPx, larguraViewportAtual]);
+
   const juncoesPorPalavraId = useMemo(() => {
     const mapa = new Map();
     const ordenadas = [...palavras].sort((a, b) => limitarNumero(a.inicio) - limitarNumero(b.inicio));
@@ -298,14 +308,9 @@ export function TelaTimeline({
     return mapa;
   }, [palavras]);
 
-  // Mapa reverso: dado o id de uma palavra, diz se ela é a "da direita" em
-  // alguma junção (ou seja, tem uma vizinha colada imediatamente à
-  // esquerda). Usado para não desenhar a alça individual esquerda quando
-  // essa fronteira já é coberta pela alça de junção compartilhada.
   const idsComJuncaoNaEsquerda = useMemo(() => {
     return new Set(juncoesPorPalavraId.values());
   }, [juncoesPorPalavraId]);
-
 
   const marcadores = useMemo(
     () => criarMarcadoresTempo(duracao, pxPorSegundo),
@@ -328,65 +333,181 @@ export function TelaTimeline({
   const duracaoRef = useRef(duracao);
   duracaoRef.current = duracao;
 
+  const centralizarAgulha = useCallback(() => {
+    const scrollContainer = containerScrollRef.current;
+    if (scrollContainer) {
+      const posicaoPx = tempoAtualSegundosRef.current * pxPorSegundo;
+      const larguraContainer = scrollContainer.clientWidth;
+      
+      ignorarScroll.current = true; 
+      
+      scrollContainer.scrollTo({
+        left: Math.max(0, posicaoPx - larguraContainer / 2),
+        behavior: 'smooth',
+      });
+      
+      if (timeoutScroll.current) clearTimeout(timeoutScroll.current);
+      timeoutScroll.current = setTimeout(() => {
+        ignorarScroll.current = false;
+      }, 600);
+    }
+  }, [pxPorSegundo]);
+
+  const aplicarZoom = useCallback((calcularNovoZoom, eventoMouse = null) => {
+    setZoom((zoomAntigo) => {
+      const novoZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, calcularNovoZoom(zoomAntigo)));
+      if (novoZoom === zoomAntigo) return zoomAntigo;
+
+      const pxPorSegundoAntigo = PX_POR_SEGUNDO_BASE * zoomAntigo;
+      const novoPxPorSegundo = PX_POR_SEGUNDO_BASE * novoZoom;
+      const scrollContainer = containerScrollRef.current;
+      const faixa = faixaRef.current;
+
+      if (scrollContainer && faixa) {
+        let tempoFocal = tempoAtualSegundosRef.current;
+        let offsetPxDaEsquerdaNaTela = 0;
+
+        if (zoomNoCursor && eventoMouse) {
+          const rectFaixa = faixa.getBoundingClientRect();
+          const rectScroll = scrollContainer.getBoundingClientRect();
+          
+          const xNaFaixaPx = eventoMouse.clientX - rectFaixa.left;
+          tempoFocal = xNaFaixaPx / pxPorSegundoAntigo;
+          
+          offsetPxDaEsquerdaNaTela = eventoMouse.clientX - rectScroll.left;
+        } else {
+          const xAgulhaPx = tempoFocal * pxPorSegundoAntigo;
+          offsetPxDaEsquerdaNaTela = xAgulhaPx - scrollContainer.scrollLeft;
+        }
+
+        scrollPosDesejadaRef.current = (tempoFocal * novoPxPorSegundo) - offsetPxDaEsquerdaNaTela;
+      }
+
+      return novoZoom;
+    });
+  }, [zoomNoCursor]);
+
+  useLayoutEffect(() => {
+    if (scrollPosDesejadaRef.current !== null && containerScrollRef.current) {
+      containerScrollRef.current.scrollLeft = scrollPosDesejadaRef.current;
+      scrollPosDesejadaRef.current = null;
+    }
+  }, [zoom]);
+
   useAtalhosDeTeclado({
     aoAlternarPlayPause,
     aoBuscarTempo,
     tempoAtualSegundosRef,
     duracaoRef,
-    setZoom,
+    aplicarZoom,
+    centralizarAgulha,
   });
 
-  // CORREÇÃO (Timeline sem vídeo/Player): este efeito agora cuida só do
-  // autoscroll. Não chamamos mais `atualizarProgressoWavesurfer` (seekTo)
-  // aqui a cada mudança de `tempoAtualSegundos` — durante a reprodução
-  // normal é o PRÓPRIO WaveSurfer quem gera esse valor via evento
-  // `timeupdate` (ver `onTempoAtualizado` passado ao useWavesurfer). Se
-  // chamássemos seekTo aqui também, cada frame de reprodução brigaria
-  // com a posição real de playback do WaveSurfer, travando o áudio. O
-  // seekTo só é chamado explicitamente dentro de `aoBuscarTempo`, usado
-  // pelos controles manuais (arrastar agulha, clicar na régua, atalhos
-  // de teclado) — nunca durante o timeupdate automático.
-  //
-  // A posição da agulha e o texto do contador continuam vindo só do
-  // JSX abaixo (`left: posicaoPlayheadPx` e
-  // `{formatarTempo(tempoAtualSegundos)}`), que reage a
-  // `tempoAtualSegundos` via render normal do React.
+  // Mede a largura visível do container de scroll (necessária pra
+  // calcular a janela de tempo visível usada na virtualização da
+  // track de LEGENDA — ver `palavrasVisiveis`). Roda uma vez no mount
+  // e sempre que o container for redimensionado (ex: usuário
+  // redimensiona a janela do app).
   useEffect(() => {
-    tempoAtualSegundosRef.current = tempoAtualSegundos;
+    const scrollContainer = containerScrollRef.current;
+    if (!scrollContainer) return undefined;
 
-    const posicaoPx = tempoAtualSegundos * pxPorSegundo;
+    const medir = () => {
+      setLarguraViewportAtual(scrollContainer.clientWidth);
+      setScrollLeftAtual(scrollContainer.scrollLeft);
+    };
+    medir();
 
-    if (seguirPlayhead && !arrastandoAgulhaRef.current) {
-      const scrollContainer = containerScrollRef.current;
-      if (scrollContainer) {
-        const margem = 120;
-        const dentroDaVista =
-          posicaoPx >= scrollContainer.scrollLeft + margem &&
-          posicaoPx <= scrollContainer.scrollLeft + scrollContainer.clientWidth - margem;
+    const observer = new ResizeObserver(medir);
+    observer.observe(scrollContainer);
+    return () => observer.disconnect();
+  }, []);
 
-        if (!dentroDaVista) {
-          // AVISAMOS QUE O SCROLL É AUTOMÁTICO
-          ignorarScroll.current = true;
-          scrollContainer.scrollTo({
-            left: Math.max(0, posicaoPx - scrollContainer.clientWidth / 2),
-            behavior: estaTocando ? 'auto' : 'smooth',
-          });
+  useEffect(() => {
+    const scrollContainer = containerScrollRef.current;
+    if (!scrollContainer) return;
 
-          if (timeoutScroll.current) clearTimeout(timeoutScroll.current);
-          timeoutScroll.current = setTimeout(() => {
-            ignorarScroll.current = false;
-          }, estaTocando ? 100 : 600);
+    const onWheel = (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        aplicarZoom((z) => {
+          const fator = e.deltaY > 0 ? 0.8 : 1.25;
+          return Number((z * fator).toFixed(3));
+        }, e);
+        return;
+      }
+
+      if (e.shiftKey) {
+        e.preventDefault();
+        const incremento = e.deltaY > 0 ? -12 : 12;
+        const alvo = e.target;
+        const noWaveform = waveTrackRef.current?.contains(alvo) || waveHeaderRef.current?.contains(alvo);
+        const naLegenda = legendaTrackRef.current?.contains(alvo) || legendaHeaderRef.current?.contains(alvo);
+
+        if (noWaveform) {
+          setAlturaOnda((a) => Math.max(48, Math.min(400, a + incremento)));
+        } else if (naLegenda) {
+          setAlturaTrilhaLegenda((a) => Math.max(40, Math.min(300, a + incremento)));
         }
       }
+    };
+
+    scrollContainer.addEventListener('wheel', onWheel, { passive: false });
+    return () => scrollContainer.removeEventListener('wheel', onWheel);
+  }, [aplicarZoom]);
+
+  useEffect(() => {
+    tempoAtualSegundosRef.current = tempoAtualSegundos;
+    const scrollContainer = containerScrollRef.current;
+    
+    if (!scrollContainer) return;
+    if (arrastandoAgulhaRef.current) return;
+
+    const posicaoPx = tempoAtualSegundos * pxPorSegundo;
+    const larguraContainer = scrollContainer.clientWidth;
+
+    if (agulhaCentralizada) {
+      ignorarScroll.current = true;
+      scrollContainer.scrollLeft = Math.max(0, posicaoPx - larguraContainer / 2);
+      
+      if (timeoutScroll.current) clearTimeout(timeoutScroll.current);
+      timeoutScroll.current = setTimeout(() => {
+        ignorarScroll.current = false;
+      }, 50); 
+      
+    } else if (seguirPlayhead) {
+      const margem = 120;
+      const dentroDaVista =
+        posicaoPx >= scrollContainer.scrollLeft + margem &&
+        posicaoPx <= scrollContainer.scrollLeft + larguraContainer - margem;
+
+      if (!dentroDaVista) {
+        ignorarScroll.current = true;
+        scrollContainer.scrollTo({
+          left: Math.max(0, posicaoPx - larguraContainer / 2),
+          behavior: estaTocando ? 'auto' : 'smooth',
+        });
+
+        if (timeoutScroll.current) clearTimeout(timeoutScroll.current);
+        timeoutScroll.current = setTimeout(() => {
+          ignorarScroll.current = false;
+        }, estaTocando ? 100 : 600);
+      }
     }
-  }, [tempoAtualSegundos, pxPorSegundo, seguirPlayhead, estaTocando]);
+  }, [tempoAtualSegundos, pxPorSegundo, seguirPlayhead, agulhaCentralizada, estaTocando]);
 
   function aoRolarManualmente() {
-    // SE FOR O CÓDIGO A ROLAR A BARRA, IGNORAR (NÃO DESLIGAR O BOTÃO)
-    if (ignorarScroll.current) return;
+    // Atualiza a posição rastreada SEMPRE (mesmo durante auto-scroll
+    // programático do "Seguir reprodução"/"Sempre no centro"), porque a
+    // virtualização da track de legenda precisa saber a posição real de
+    // scroll independente de quem causou o scroll.
+    const scrollContainer = containerScrollRef.current;
+    if (scrollContainer) setScrollLeftAtual(scrollContainer.scrollLeft);
 
+    if (ignorarScroll.current) return;
     if (arrastandoAgulhaRef.current) return;
     setSeguirPlayhead(false);
+    setAgulhaCentralizada(false);
   }
 
   const tempoAPartirDoEventoNaFaixa = useCallback(
@@ -463,10 +584,6 @@ export function TelaTimeline({
     resizeAtivoRef.current = null;
   }
 
-  // Alça de JUNÇÃO: fica na fronteira entre duas palavras coladas. Arrastar
-  // move o fim da palavra da esquerda e o início da da direita ao mesmo
-  // tempo (como no editor de junções do DaVinci Resolve). Só existe quando
-  // as duas palavras estão de fato encostadas — ver juncoesPorPalavraId.
   function iniciarResizeJuncao(evento, palavraEsquerdaId, palavraDireitaId) {
     evento.stopPropagation();
     evento.currentTarget.setPointerCapture(evento.pointerId);
@@ -501,11 +618,6 @@ export function TelaTimeline({
     resizeJuncaoAtivoRef.current = null;
   }
 
-  // Arrastar pelo CENTRO do bloco: move a palavra inteira (mantendo sua
-  // duração) para qualquer posição livre da timeline. Diferente das alças
-  // de borda (resize com ripple), aqui não há vínculo com as vizinhas — ao
-  // soltar, se o novo intervalo cair em cima de outra(s) palavra(s), a área
-  // coberta é recortada delas (ver aplicarMoverPalavraComCorte no App.jsx).
   function iniciarMover(evento, palavra) {
     evento.stopPropagation();
     evento.currentTarget.setPointerCapture(evento.pointerId);
@@ -517,8 +629,6 @@ export function TelaTimeline({
       palavraId: palavra.id,
       pointerId: evento.pointerId,
       duracaoPalavra,
-      // deslocamento entre o ponto do clique e o início do bloco, para que
-      // o bloco não "salte" para debaixo do cursor ao começar o arraste.
       deslocamentoInicialPx:
         evento.clientX - faixaRef.current.getBoundingClientRect().left - palavra.inicio * pxPorSegundo,
     };
@@ -561,6 +671,63 @@ export function TelaTimeline({
     moverAtivoRef.current = null;
     setArrastoVisual(null);
   }
+
+  // Lógica para controle do resize vertical das trilhas
+  const resizeAlturaAtivoRef = useRef(null);
+
+  function iniciarResizeAltura(evento, trilha) {
+    evento.preventDefault();
+    evento.stopPropagation();
+    evento.currentTarget.setPointerCapture(evento.pointerId);
+    resizeAlturaAtivoRef.current = {
+      trilha,
+      pointerId: evento.pointerId,
+      startY: evento.clientY,
+      alturaInicial: trilha === 'onda' ? alturaOnda : alturaTrilhaLegenda,
+    };
+  }
+
+  function moverResizeAltura(evento) {
+    const ativo = resizeAlturaAtivoRef.current;
+    if (!ativo || ativo.pointerId !== evento.pointerId) return;
+
+    const deltaY = evento.clientY - ativo.startY;
+    if (ativo.trilha === 'onda') {
+      setAlturaOnda(Math.max(48, Math.min(400, ativo.alturaInicial + deltaY)));
+    } else if (ativo.trilha === 'legenda') {
+      setAlturaTrilhaLegenda(Math.max(40, Math.min(300, ativo.alturaInicial + deltaY)));
+    }
+  }
+
+  function finalizarResizeAltura(evento) {
+    const ativo = resizeAlturaAtivoRef.current;
+    if (ativo && ativo.pointerId === evento.pointerId) {
+      try {
+        evento.currentTarget.releasePointerCapture(evento.pointerId);
+      } catch { }
+    }
+    resizeAlturaAtivoRef.current = null;
+  }
+
+// FUNÇÃO DE RENDERIZAÇÃO: Retorna a alça sem causar unmount no React
+  const renderAlcaVertical = (trilha) => (
+    <div
+      onPointerDown={(e) => iniciarResizeAltura(e, trilha)}
+      onPointerMove={moverResizeAltura}
+      onPointerUp={finalizarResizeAltura}
+      onPointerCancel={finalizarResizeAltura}
+      style={{
+        position: 'absolute',
+        bottom: -3,
+        left: 0,
+        right: 0,
+        height: 6,
+        cursor: 'row-resize',
+        zIndex: 10,
+        touchAction: 'none'
+      }}
+    />
+  );
 
   return (
     <div
@@ -607,9 +774,7 @@ export function TelaTimeline({
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 16 }}>
           {volumeReferencia && (
             <div
-              title={
-                `Cor por volume: azul = mais baixo, verde = na média (${volumeReferencia.volumeDbMedia?.toFixed?.(1)} dB), vermelho = mais alto`
-              }
+              title={`Cor por volume: azul = mais baixo, verde = na média (${volumeReferencia.volumeDbMedia?.toFixed?.(1)} dB), vermelho = mais alto`}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -659,14 +824,47 @@ export function TelaTimeline({
             {formatarTempo(tempoAtualSegundos)} / {formatarTempo(duracao)}
           </span>
 
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: COR_TEXTO_TERC, cursor: 'pointer' }} title="Trava a agulha no centro da tela (Atalho para centralizar: C)">
+            <input
+              type="checkbox"
+              checked={agulhaCentralizada}
+              onChange={(e) => {
+                const checado = e.target.checked;
+                setAgulhaCentralizada(checado);
+                if (checado) {
+                  setSeguirPlayhead(false);
+                  centralizarAgulha();
+                }
+              }}
+              style={{ accentColor: COR_AMBAR }}
+            />
+            Sempre no centro
+          </label>
+
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: COR_TEXTO_TERC, cursor: 'pointer' }}>
             <input
               type="checkbox"
               checked={seguirPlayhead}
-              onChange={(e) => setSeguirPlayhead(e.target.checked)}
+              onChange={(e) => {
+                const checado = e.target.checked;
+                setSeguirPlayhead(checado);
+                if (checado) setAgulhaCentralizada(false);
+              }}
               style={{ accentColor: COR_AMBAR }}
             />
             Seguir reprodução
+          </label>
+
+          <div style={{ width: 1, height: 24, background: COR_HAIRLINE, margin: '0 4px' }} />
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: COR_TEXTO_TERC, cursor: 'pointer' }} title="Desmarque para que o zoom sempre ancore na agulha de reprodução">
+            <input
+              type="checkbox"
+              checked={zoomNoCursor}
+              onChange={(e) => setZoomNoCursor(e.target.checked)}
+              style={{ accentColor: COR_AMBAR }}
+            />
+            Zoom no cursor
           </label>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -677,9 +875,9 @@ export function TelaTimeline({
               max={ZOOM_MAX}
               step={0.05}
               value={zoom}
-              onChange={(e) => setZoom(Number(e.target.value))}
+              onChange={(e) => aplicarZoom(() => Number(e.target.value))}
               style={{ width: 140 }}
-              title="Atalhos: + / -"
+              title="Atalhos: + / - ou Ctrl+Scroll"
             />
             <span style={{ fontSize: 12, color: COR_TEXTO_TERC, width: 34, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
               {zoom.toFixed(2)}x
@@ -716,9 +914,12 @@ export function TelaTimeline({
         <div style={{ display: 'grid', gridTemplateColumns: `${LARGURA_ROTULO}px 1fr`, minWidth: larguraTotal + LARGURA_ROTULO }}>
           <div style={{ position: 'sticky', left: 0, zIndex: 2, background: COR_PAINEL }}>
             <div style={{ height: ALTURA_REGUA, borderBottom: `1px solid ${COR_HAIRLINE}` }} />
+            
             <div
+              ref={waveHeaderRef}
               style={{
-                height: ALTURA_ONDA,
+                position: 'relative',
+                height: alturaOnda,
                 borderBottom: `1px solid ${COR_HAIRLINE}`,
                 display: 'flex',
                 alignItems: 'center',
@@ -731,10 +932,14 @@ export function TelaTimeline({
               }}
             >
               Áudio
+              {renderAlcaVertical("onda")}
             </div>
+
             <div
+              ref={legendaHeaderRef}
               style={{
-                height: ALTURA_TRILHA_LEGENDA,
+                position: 'relative',
+                height: alturaTrilhaLegenda,
                 display: 'flex',
                 alignItems: 'center',
                 paddingLeft: 10,
@@ -746,6 +951,7 @@ export function TelaTimeline({
               }}
             >
               Legenda
+              {renderAlcaVertical('legenda')} 
             </div>
           </div>
 
@@ -781,8 +987,10 @@ export function TelaTimeline({
               ))}
             </div>
 
-            <div style={{ position: 'relative', height: ALTURA_ONDA, borderBottom: `1px solid ${COR_HAIRLINE}`, background: '#131418' }}>
-
+            <div 
+              ref={waveTrackRef}
+              style={{ position: 'relative', height: alturaOnda, borderBottom: `1px solid ${COR_HAIRLINE}`, background: '#131418' }}
+            >
               <div
                 ref={wavesurferContainerRef}
                 style={{
@@ -797,13 +1005,13 @@ export function TelaTimeline({
               />
 
               {!temWaveformReal && !carregando && (
-                <svg width={larguraTotal} height={ALTURA_ONDA} style={{ display: 'block', position: 'absolute', top: 0, left: 0 }}>
-                  <line x1="0" y1={ALTURA_ONDA / 2} x2={larguraTotal} y2={ALTURA_ONDA / 2} stroke={COR_HAIRLINE} />
+                <svg width={larguraTotal} height={alturaOnda} style={{ display: 'block', position: 'absolute', top: 0, left: 0 }}>
+                  <line x1="0" y1={alturaOnda / 2} x2={larguraTotal} y2={alturaOnda / 2} stroke={COR_HAIRLINE} />
                   {picosFallback.map(([min, max], indice) => {
                     const x = (indice / picosFallback.length) * larguraTotal;
                     const largura = Math.max(1, larguraTotal / picosFallback.length);
-                    const yTopo = ALTURA_ONDA / 2 - max * (ALTURA_ONDA / 2 - 4);
-                    const yBase = ALTURA_ONDA / 2 - min * (ALTURA_ONDA / 2 - 4);
+                    const yTopo = alturaOnda / 2 - max * (alturaOnda / 2 - 4);
+                    const yBase = alturaOnda / 2 - min * (alturaOnda / 2 - 4);
                     return (
                       <rect
                         key={indice}
@@ -818,12 +1026,15 @@ export function TelaTimeline({
                   })}
                 </svg>
               )}
+              
+              {renderAlcaVertical('onda')}
             </div>
 
             <div
-              style={{ position: 'relative', height: ALTURA_TRILHA_LEGENDA, background: '#16171b' }}
+              ref={legendaTrackRef}
+              style={{ position: 'relative', height: alturaTrilhaLegenda, background: '#16171b' }}
             >
-              {palavras.map((palavra) => {
+              {palavrasVisiveis.map((palavra) => {
                 const emArraste = arrastoVisual?.palavraId === palavra.id;
                 const inicio = emArraste
                   ? arrastoVisual.inicio
@@ -836,21 +1047,14 @@ export function TelaTimeline({
                 const selecionada = palavra.id === palavraSelecionadaId;
                 const emGrupo = idsSelecionados?.includes(palavra.id);
 
-                // Se esta palavra tem uma vizinha colada à direita, a
-                // borda direita dela NÃO é resize individual — vira parte
-                // da alça de junção compartilhada (desenhada separadamente
-                // logo abaixo, centrada na fronteira). O mesmo vale para a
-                // borda esquerda quando a vizinha da ESQUERDA está colada
-                // nela.
                 const idVizinhaDireitaColada = juncoesPorPalavraId.get(palavra.id) || null;
                 const temJuncaoNaDireita = !!idVizinhaDireitaColada;
                 const temJuncaoNaEsquerda = idsComJuncaoNaEsquerda.has(palavra.id);
 
-                // Cor do bloco: por volume (gradiente azul/verde/vermelho)
-                // quando o projeto tem dados de sincronização de áudio,
-                // ou a cor sólida antiga como fallback.
                 const { fundo: corFundoBloco, texto: corTextoBloco } =
                   resolverCoresDoBlocoDePalavra(palavra, volumeReferencia);
+
+                const alturaBloco = Math.max(20, alturaTrilhaLegenda - 20);
 
                 return (
                   <div
@@ -869,7 +1073,7 @@ export function TelaTimeline({
                       left: esquerda,
                       top: 10,
                       width: largura,
-                      height: 38,
+                      height: alturaBloco,
                       borderRadius: 6,
                       border: selecionada ? `2px solid ${COR_AMBAR}` : emGrupo ? `2px solid ${COR_AZUL}` : `1px solid ${COR_HAIRLINE}`,
                       background: corFundoBloco,
@@ -887,9 +1091,6 @@ export function TelaTimeline({
                       overflow: 'hidden',
                     }}
                   >
-                    {/* Alça de resize individual da borda ESQUERDA — só
-                        ativa quando não há junção com a vizinha da
-                        esquerda (senão a alça de junção cuida disso). */}
                     {!temJuncaoNaEsquerda && (
                       <div
                         onPointerDown={(e) => iniciarResize(e, palavra, 'esquerda')}
@@ -935,9 +1136,6 @@ export function TelaTimeline({
                       {palavra.texto}
                     </span>
 
-                    {/* Alça de resize individual da borda DIREITA — só
-                        ativa quando não há junção com a vizinha da
-                        direita. */}
                     {!temJuncaoNaDireita && (
                       <div
                         onPointerDown={(e) => iniciarResize(e, palavra, 'direita')}
@@ -965,19 +1163,13 @@ export function TelaTimeline({
                 );
               })}
 
-              {/* Alças de JUNÇÃO: uma por par de palavras coladas,
-                  desenhada por cima, centrada exatamente na fronteira
-                  entre as duas. Arrastar move o fim da esquerda e o
-                  início da direita ao mesmo tempo (estilo DaVinci
-                  Resolve). Só existe quando o espaço entre elas é ~0 —
-                  quando há espaço livre, cada palavra é redimensionada
-                  individualmente pela sua própria alça de borda. */}
-              {palavras.map((palavra) => {
+              {palavrasVisiveis.map((palavra) => {
                 const idVizinhaDireitaColada = juncoesPorPalavraId.get(palavra.id);
                 if (!idVizinhaDireitaColada) return null;
-                if (arrastoVisual?.palavraId === palavra.id) return null; // some durante arraste de mover
+                if (arrastoVisual?.palavraId === palavra.id) return null;
 
                 const fronteira = limitarNumero(palavra.fim) * pxPorSegundo;
+                const alturaBloco = Math.max(20, alturaTrilhaLegenda - 20);
 
                 return (
                   <div
@@ -992,7 +1184,7 @@ export function TelaTimeline({
                       left: fronteira - LARGURA_ALCA_JUNCAO_PX / 2,
                       top: 10,
                       width: LARGURA_ALCA_JUNCAO_PX,
-                      height: 38,
+                      height: alturaBloco,
                       cursor: 'ew-resize',
                       touchAction: 'none',
                       zIndex: 3,
@@ -1005,6 +1197,8 @@ export function TelaTimeline({
                   </div>
                 );
               })}
+
+              {renderAlcaVertical('legenda')}
             </div>
 
             <div

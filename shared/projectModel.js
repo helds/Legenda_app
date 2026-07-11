@@ -19,20 +19,48 @@
 
 export function criarEstiloPadrao() {
   return {
+    // --- Fontes e Texto ---
     fonte: 'Roboto Flex',
-    pesoFonte: 500,
+    pesoFonte: 400,
     italico: false,
     fonteUrl: null,
     tamanhoBase: 42,
+    caixaAlta: false, // Controla o textTransform (uppercase)[cite: 7]
+    estiloSoNoDestaque: false, // Se true, aplica peso/itálico só na palavra ativa
+
+    // --- Cores e Transições ---
     corBase: '#FFFFFF',
     corDestaque: '#EF9F27',
-    escalaDestaque: 1.3,
-    offsetX: 0,
-    offsetY: 0,
     duracaoTransicaoMs: 120,
-    posicaoY: 0.85,
-    modoRevelacao: 'silaba',
 
+    // --- Animação de Pulo (Highlight) ---
+    escalaDestaque: 1.3, // Mantido por retrocompatibilidade
+    escalaPulo: 1.0, // Escala física do pulo[cite: 6]
+    elevacaoPulo: 0.25, // Translação em Y[cite: 6]
+    opacidadeAntesDoDestaque: 1.0, // Opacidade das palavras apagadas[cite: 6]
+    modoRevelacao: 'silaba', // 'palavra' | 'letra' | 'silaba'[cite: 6]
+
+    // --- Posicionamento e Container ---
+    posicaoX: 0.5, // Centralizado horizontalmente (0.0 a 1.0)[cite: 6]
+    posicaoY: 0.85, // Alinhamento vertical (85% da tela)[cite: 6]
+    larguraContainer: 45, // Largura máxima em %[cite: 6]
+    alturaContainer: 0, // 0 significa 'auto' no painel[cite: 6]
+    offsetX: 0, 
+    offsetY: 0,
+
+    // --- Espaçamentos e Margens ---
+    espacamentoLinhas: 1.2, // lineHeight[cite: 6]
+    espacamentoPalavras: 0.4, // gap entre palavras em 'em'[cite: 6]
+    espacamentoLetras: 0, // letterSpacing em px[cite: 7]
+    margemCima: 0, // padding-top extra[cite: 6]
+    margemBaixo: 0, // padding-bottom extra[cite: 6]
+
+    // --- Box de Fundo (Tarja Preta) ---
+    comFundo: true, // Ativa/desativa o box de fundo[cite: 6]
+    corFundo: '#000000', // Cor do box em HEX[cite: 6]
+    opacidadeFundo: 0.9, // Opacidade do box (0.0 a 1.0)[cite: 6]
+    paddingFundo: 10, // Interno da tarja em px[cite: 6]
+    borderRadiusFundo: 0, // Arredondamento dos cantos em px[cite: 6]
   };
 }
 

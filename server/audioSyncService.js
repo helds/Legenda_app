@@ -82,7 +82,7 @@ function executarAlignmentPython({
   caminhoAudio,
   texto,
   idioma = 'pt',
-  pythonBin = process.env.PYTHON_BIN || 'python3',
+  pythonBin =   process.env.PYTHON_BIN || (process.platform === 'win32' ? 'python' : 'python3'),
   aoProgredir,
 }) {
   return new Promise((resolve, reject) => {
